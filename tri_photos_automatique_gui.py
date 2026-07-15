@@ -19,15 +19,19 @@ import tensorflow as tf
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 # ====================== CONFIGURATION ======================
 class Config:
-    BASE_DIR = Path(r"C:\Users\ln\Desktop\documents\photos\tri_photo_RAW")
+    # Utiliser des chemins relatifs ou basés sur le répertoire personnel
+    BASE_DIR = Path.home() / "Documents" / "photos" / "tri_photo_RAW"
     DOSSIER_A_TRIER = BASE_DIR / "a_trier"
     DOSSIER_TRIES = BASE_DIR / "tries"
     MODEL_SAVE_PATH = BASE_DIR / "models"
     TAGS_FILE = BASE_DIR / "tags.json"
 
-    # Catégories et descriptions OPTIMISÉES (celles de ton ancien script qui fonctionnait)
+    # Catégories et descriptions OPTIMISÉES
     CATEGORIES = {
         "paysage": "une photo de paysage avec montagnes, vue large, horizon, nature",
         "portrait": "un portrait de personne, visage, premier plan, sourire",
@@ -39,9 +43,18 @@ class Config:
         "animale": "une photo d'animal, chien, chat, oiseau, sauvage, mammifère, reptile, poisson, faune",
         "autre": "autre type de photo"
     }
+    
     RAW_EXTENSIONS = {'.raw', '.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef', '.raf', '.x3f'}
-    IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+    IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
     METADATA_EXTENSIONS = {'.thm', '.xmp', '.json'}
+
+    @classmethod
+    def ensure_directories(cls):
+        """Crée les répertoires nécessaires s'ils n'existent pas"""
+        cls.BASE_DIR.mkdir(parents=True, exist_ok=True)
+        cls.DOSSIER_A_TRIER.mkdir(parents=True, exist_ok=True)
+        cls.DOSSIER_TRIES.mkdir(parents=True, exist_ok=True)
+        cls.MODEL_SAVE_PATH.mkdir(parents=True, exist_ok=True)
 
 # ====================== WATCHDOG THREAD-SAFE ======================
 class WatchdogWorker(QThread):
@@ -73,7 +86,7 @@ class FileHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         if not event.is_directory:
-            if not any(event.src_path.lower().endswith(ext) for ext in ['.thm', '.xmp']):
+            if not any(event.src_path.lower().endswith(ext) for ext in ['.thm', '.xmp', '.json']):
                 self.worker.file_detected.emit(event.src_path)
 
 # ====================== GESTION DES TAGS ======================
@@ -87,7 +100,8 @@ class TagManager:
             try:
                 with open(self.tags_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
+            except Exception as e:
+                logging.error(f"Erreur de chargement des tags: {e}")
                 return {}
         return {}
 
@@ -155,6 +169,9 @@ class PhotoSorterApp(QMainWindow):
             QCheckBox, QRadioButton { spacing: 8px; color: #ffffff; }
         """)
 
+        # Initialiser la configuration et créer les répertoires
+        Config.ensure_directories()
+        
         self.config = Config()
         self.tag_manager = TagManager(self.config.TAGS_FILE)
         self.model_clip = None
@@ -175,13 +192,17 @@ class PhotoSorterApp(QMainWindow):
         self.current_tags_label = None
         self.tf_model_path = None
         self.tf_status = None
-        self.folder_path_input = None  # NOUVEAU : pour la recherche par dossier
+        self.folder_path_input = None
 
         self.init_ui()
         self.load_models()
 
     # ====================== UTILITAIRES ======================
     def pil2pixmap(self, pil_image):
+        """Convertit une image PIL en QPixmap"""
+        if pil_image is None:
+            return QPixmap()
+            
         if pil_image.mode == "RGBA":
             img_data = pil_image.tobytes("raw", "RGBA")
             qimg = QImage(img_data, pil_image.size[0], pil_image.size[1], QImage.Format_RGBA8888)
@@ -195,6 +216,7 @@ class PhotoSorterApp(QMainWindow):
         return QPixmap.fromImage(qimg)
 
     def log_message(self, message):
+        """Ajoute un message au journal"""
         if self.log_text:
             self.log_text.append(message)
 
@@ -216,7 +238,7 @@ class PhotoSorterApp(QMainWindow):
 
     def setup_auto_tab(self):
         self.auto_tab = QWidget()
-        self.tabs.addTab(self.auto_tab, "🤖 Tri Automatique")
+        self.tabs.addTab(self.auto_tab, "📷 Tri Automatique")
         layout = QVBoxLayout(self.auto_tab)
         layout.setSpacing(15)
 
@@ -265,7 +287,7 @@ class PhotoSorterApp(QMainWindow):
         layout.addWidget(watch_group)
 
         # Bouton Trier maintenant
-        sort_btn = QPushButton("🔄 Trier maintenant")
+        sort_btn = QPushButton("📁 Trier maintenant")
         sort_btn.setStyleSheet("font-weight: bold;")
         sort_btn.clicked.connect(self.trier_dossier_maintenant)
         layout.addWidget(sort_btn)
@@ -284,7 +306,7 @@ class PhotoSorterApp(QMainWindow):
         self.tabs.addTab(self.tags_tab, "🏷️ Gestion des Tags")
         layout = QVBoxLayout(self.tags_tab)
 
-        # ===== NOUVEAU : Recherche par dossier =====
+        # Recherche par dossier
         folder_search_group = QGroupBox("Rechercher dans un dossier")
         folder_search_layout = QHBoxLayout()
         self.folder_path_input = QLineEdit()
@@ -351,7 +373,7 @@ class PhotoSorterApp(QMainWindow):
 
     def setup_tf_tab(self):
         self.tf_tab = QWidget()
-        self.tabs.addTab(self.tf_tab, "🧠 Modèle TensorFlow")
+        self.tabs.addTab(self.tf_tab, "🤖 Modèle TensorFlow")
         layout = QVBoxLayout(self.tf_tab)
 
         # Sélection du modèle
@@ -366,12 +388,12 @@ class PhotoSorterApp(QMainWindow):
         layout.addWidget(model_frame)
 
         # Bouton pour télécharger un modèle par défaut
-        download_btn = QPushButton("⬇️ Comment obtenir un modèle ?")
+        download_btn = QPushButton("❓ Comment obtenir un modèle ?")
         download_btn.clicked.connect(self.download_default_model)
         layout.addWidget(download_btn)
 
         # Bouton charger
-        load_model_btn = QPushButton("🔄 Charger le modèle TensorFlow")
+        load_model_btn = QPushButton("📁 Charger le modèle TensorFlow")
         load_model_btn.clicked.connect(self.load_tf_model)
         layout.addWidget(load_model_btn)
 
@@ -388,21 +410,48 @@ class PhotoSorterApp(QMainWindow):
 
     # ====================== CHARGEMENT DES MODÈLES ======================
     def load_models(self):
-        self.log_message("🔄 Chargement du modèle CLIP (cela peut prendre 1-2 min)...")
+        """Charge le modèle CLIP"""
+        self.log_message("📁 Chargement du modèle CLIP (cela peut prendre 1-2 min)...")
         self.log_message("   → Le modèle pèse ~500Mo. Sois patient !")
+        
         try:
             device = "cuda" if torch.cuda.is_available() else "cpu"
             self.log_message(f"   → Appareil utilisé : {device}")
-            self.model_clip = SentenceTransformer('clip-ViT-B-32', device=device)
+            
+            # Essayer de charger CLIP-ViT-B-32
+            try:
+                self.model_clip = SentenceTransformer('clip-ViT-B-32', device=device)
+                self.log_message("✅ Modèle CLIP-ViT-B-32 chargé avec succès !")
+            except Exception as e1:
+                self.log_message(f"⚠️ Échec de CLIP-ViT-B-32: {e1}")
+                self.log_message("   → Tentative avec un modèle plus léger...")
+                try:
+                    self.model_clip = SentenceTransformer('all-MiniLM-L6-v2', device=device)
+                    self.log_message("✅ Modèle all-MiniLM-L6-v2 chargé avec succès !")
+                except Exception as e2:
+                    self.log_message(f"❌ Échec du chargement de tous les modèles: {e2}")
+                    QMessageBox.critical(
+                        self, "Erreur", 
+                        f"Échec du chargement des modèles:\n{e2}\n\n"
+                        "Vérifiez votre connexion Internet et que vous avez assez d'espace disque."
+                    )
+                    return
+            
             self.log_message("   → Encodage des catégories...")
             self.text_inputs = list(self.config.CATEGORIES.values())
             self.text_embeddings = self.model_clip.encode(self.text_inputs, convert_to_tensor=True)
-            self.log_message("✅ Modèle CLIP chargé avec succès !")
+            self.log_message("✅ Modèle prêt à l'emploi !")
+            
         except Exception as e:
             self.log_message(f"❌ Échec du chargement de CLIP: {e}")
-            QMessageBox.critical(self, "Erreur", f"Échec du chargement de CLIP:\n{e}\n\nEssaie avec un modèle plus léger (all-MiniLM-L6-v2) si le problème persiste.")
+            QMessageBox.critical(
+                self, "Erreur", 
+                f"Échec du chargement de CLIP:\n{e}\n\n"
+                "Essaie avec un modèle plus léger (all-MiniLM-L6-v2) si le problème persiste."
+            )
 
     def load_tf_model(self):
+        """Charge un modèle TensorFlow personnalisé"""
         path = self.tf_model_path.text()
         if not path:
             QMessageBox.warning(self, "Erreur", "Aucun fichier de modèle sélectionné.")
@@ -468,7 +517,7 @@ class PhotoSorterApp(QMainWindow):
             self.load_image_tags(file)
 
     def browse_folder_for_tags(self):
-        """NOUVEAU : Parcourir un dossier pour chercher des images taguées"""
+        """Parcourir un dossier pour chercher des images taguées"""
         folder = QFileDialog.getExistingDirectory(
             self, "Sélectionner un dossier à scanner", str(self.config.DOSSIER_TRIES)
         )
@@ -481,32 +530,35 @@ class PhotoSorterApp(QMainWindow):
         self.search_results.clear()
         all_images = []
 
-        for root, _, files in os.walk(folder):
-            for file in files:
-                filepath = Path(root) / file
-                if filepath.suffix.lower() in self.config.IMAGE_EXTENSIONS | self.config.RAW_EXTENSIONS:
-                    all_images.append(str(filepath))
+        try:
+            for root, _, files in os.walk(folder):
+                for file in files:
+                    filepath = Path(root) / file
+                    if filepath.suffix.lower() in self.config.IMAGE_EXTENSIONS | self.config.RAW_EXTENSIONS:
+                        all_images.append(str(filepath))
 
-        if not all_images:
-            self.log_message("❌ Aucun image trouvée dans ce dossier.")
-            return
+            if not all_images:
+                self.log_message("❌ Aucune image trouvée dans ce dossier.")
+                return
 
-        # Filtrer par tag si un tag est saisi
-        tag = self.tag_search.text().strip()
-        if tag:
-            results = []
+            # Filtrer par tag si un tag est saisi
+            tag = self.tag_search.text().strip()
+            if tag:
+                results = []
+                for img_path in all_images:
+                    img_tags = self.tag_manager.get_tags(img_path)
+                    if tag.lower() in [t.lower() for t in img_tags]:
+                        results.append(img_path)
+                all_images = results
+
             for img_path in all_images:
-                img_tags = self.tag_manager.get_tags(img_path)
-                if tag.lower() in [t.lower() for t in img_tags]:
-                    results.append(img_path)
-            all_images = results
+                tags = self.tag_manager.get_tags(img_path)
+                tag_str = f" [Tags: {', '.join(tags)}]" if tags else "[Aucun tag]"
+                self.search_results.addItem(f"{os.path.basename(img_path)}{tag_str} ({img_path})")
 
-        for img_path in all_images:
-            tags = self.tag_manager.get_tags(img_path)
-            tag_str = f" [Tags: {', '.join(tags)}]" if tags else "[Aucun tag]"
-            self.search_results.addItem(f"{os.path.basename(img_path)}{tag_str} ({img_path})")
-
-        self.log_message(f"✅ {len(all_images)} image(s) trouvée(s) dans {folder}.")
+            self.log_message(f"✅ {len(all_images)} image(s) trouvée(s) dans {folder}.")
+        except Exception as e:
+            self.log_message(f"❌ Erreur lors du scan du dossier: {e}")
 
     # ====================== GESTION DES TAGS ======================
     def add_tag_to_image(self):
@@ -527,9 +579,13 @@ class PhotoSorterApp(QMainWindow):
         self.load_image_tags(image_path)
 
     def load_image_tags(self, image_path):
-        tags = self.tag_manager.get_tags(image_path)
-        self.current_tags_label.setText(f"Tags actuels : {', '.join(tags) if tags else 'Aucun'}")
-        self.log_message(f"Tags pour {os.path.basename(image_path)}: {tags}")
+        """Charge les tags d'une image"""
+        try:
+            tags = self.tag_manager.get_tags(image_path)
+            self.current_tags_label.setText(f"Tags actuels : {', '.join(tags) if tags else 'Aucun'}")
+            self.log_message(f"Tags pour {os.path.basename(image_path)}: {tags}")
+        except Exception as e:
+            self.log_message(f"⚠️ Erreur de chargement des tags: {e}")
 
     def search_by_tag(self):
         """Recherche des images par tag dans le dossier sélectionné"""
@@ -568,17 +624,19 @@ class PhotoSorterApp(QMainWindow):
             self.load_image_tags(image_path)
 
     def load_image_preview(self, image_path):
+        """Charge l'aperçu d'une image"""
         try:
             if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
                 image = self.raw_to_pil(image_path)
             else:
                 image = Image.open(image_path)
+            
             if image:
                 image.thumbnail((400, 400))
                 pixmap = self.pil2pixmap(image)
                 self.image_label.setPixmap(pixmap)
         except Exception as e:
-            self.log_message(f"Erreur de chargement de l'image: {e}")
+            self.log_message(f"⚠️ Erreur de chargement de l'image: {e}")
             self.image_label.clear()
 
     def download_default_model(self):
@@ -618,7 +676,7 @@ class PhotoSorterApp(QMainWindow):
             self.watchdog_worker = WatchdogWorker(str(self.config.DOSSIER_A_TRIER))
             self.watchdog_worker.file_detected.connect(self.on_file_detected)
             self.watchdog_worker.start()
-            self.log_message(f"👀 Surveillance active sur : {self.config.DOSSIER_A_TRIER}")
+            self.log_message(f"👁️ Surveillance active sur : {self.config.DOSSIER_A_TRIER}")
 
     def stop_watchdog(self):
         if self.watchdog_worker:
@@ -632,29 +690,35 @@ class PhotoSorterApp(QMainWindow):
 
     # ====================== TRI ET CLASSIFICATION ======================
     def trier_dossier_maintenant(self):
-        self.log_message("🔄 Tri du dossier en cours...")
+        """Trie le dossier sélectionné maintenant"""
+        self.log_message("📁 Tri du dossier en cours...")
         self.trier_dossier(str(self.config.DOSSIER_A_TRIER))
 
     def trier_dossier(self, dossier):
+        """Trie toutes les images dans un dossier"""
         try:
             files = []
             for root, _, filenames in os.walk(dossier):
                 for filename in filenames:
                     filepath = Path(root) / filename
-                    if filepath.suffix.lower() not in ['.thm', '.xmp']:
+                    if filepath.suffix.lower() not in ['.thm', '.xmp', '.json']:
                         files.append(filepath)
 
             raw_files = [f for f in files if f.suffix.lower() in self.config.RAW_EXTENSIONS]
             other_files = [f for f in files if f not in raw_files]
             all_files = raw_files + other_files
 
+            self.log_message(f"📁 Trouvé {len(all_files)} fichier(s) à trier")
+            
             for filepath in all_files:
                 self.log_message(f"📷 Tri de : {filepath}")
                 self.classer_et_deplacer(str(filepath))
+                
         except Exception as e:
             self.log_message(f"❌ Erreur lors du tri : {e}")
 
     def classer_et_deplacer(self, chemin_image):
+        """Classifie et déplace une image"""
         try:
             use_tf = self.radio_tf.isChecked() and self.model_tf is not None
             if use_tf:
@@ -666,9 +730,9 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"⚠️ Erreur avec {chemin_image}: {e}")
 
     def classer_image_clip(self, chemin_image):
-        """Classifie une image avec CLIP (OPTIMISÉ pour ton cas)"""
+        """Classifie une image avec CLIP"""
         try:
-            if chemin_image.lower().endswith(('.raw', '.cr2', '.nef', '.arw', '.dng')):
+            if chemin_image.lower().endswith(tuple(self.config.RAW_EXTENSIONS)):
                 image = self.raw_to_pil(chemin_image)
                 if image is None:
                     return "autre"
@@ -676,10 +740,10 @@ class PhotoSorterApp(QMainWindow):
                 try:
                     image = Image.open(chemin_image)
                 except Exception as e:
-                    self.log_message(f"Erreur d'ouverture de {chemin_image}: {e}")
+                    self.log_message(f"⚠️ Erreur d'ouverture de {chemin_image}: {e}")
                     return "autre"
 
-            # TAILLE AUGMENTÉE pour plus de précision (768x768 au lieu de 512x512)
+            # TAILLE AUGMENTÉE pour plus de précision
             if max(image.size) > 768:
                 image = image.resize((768, 768))
 
@@ -687,18 +751,19 @@ class PhotoSorterApp(QMainWindow):
             similarities = util.cos_sim(image_embedding, self.text_embeddings)[0]
             categorie = list(self.config.CATEGORIES.keys())[similarities.argmax().item()]
 
-            # SEUIL DE CONFIANCE PLUS BAS (0.2 au lieu de 0.3)
+            # SEUIL DE CONFIANCE
             max_similarity = similarities.max().item()
             if max_similarity < 0.2:
                 return "autre"
             return categorie
         except Exception as e:
-            self.log_message(f"Erreur de classification CLIP pour {chemin_image}: {e}")
+            self.log_message(f"⚠️ Erreur de classification CLIP pour {chemin_image}: {e}")
             return "autre"
 
     def classer_image_tf(self, chemin_image):
+        """Classifie une image avec TensorFlow"""
         try:
-            if chemin_image.lower().endswith(('.raw', '.cr2', '.nef', '.arw', '.dng')):
+            if chemin_image.lower().endswith(tuple(self.config.RAW_EXTENSIONS)):
                 image = self.raw_to_pil(chemin_image)
                 if image is None:
                     return "autre"
@@ -718,19 +783,26 @@ class PhotoSorterApp(QMainWindow):
             categorie = list(self.config.CATEGORIES.keys())[np.argmax(predictions[0])]
             return categorie
         except Exception as e:
-            self.log_message(f"Erreur de classification TF pour {chemin_image}: {e}")
+            self.log_message(f"⚠️ Erreur de classification TF pour {chemin_image}: {e}")
             return "autre"
 
     def raw_to_pil(self, raw_path):
+        """Convertit un fichier RAW en image PIL"""
         try:
             with rawpy.imread(raw_path) as raw:
-                rgb_array = raw.postprocess()  # Corrigé : parenthèses ajoutées
+                rgb_array = raw.postprocess(
+                    use_camera_wb=True,
+                    output_color=rawpy.ColorSpace.sRGB,
+                    no_auto_bright=True,
+                    gamma=(1, 1)
+                )
                 return Image.fromarray(rgb_array.astype('uint8'))
         except Exception as e:
-            self.log_message(f"Erreur avec {raw_path}: {e}")
+            self.log_message(f"⚠️ Erreur avec {raw_path}: {e}")
             return None
 
     def deplacer_image_et_metadonnees(self, chemin_source, categorie):
+        """Déplace une image et ses métadonnées"""
         try:
             chemin_source = os.path.normpath(chemin_source)
             dossier_dest = os.path.join(self.config.DOSSIER_TRIES, categorie)
@@ -753,10 +825,15 @@ class PhotoSorterApp(QMainWindow):
             shutil.move(chemin_source, chemin_dest)
 
             base_name = os.path.splitext(os.path.basename(chemin_source))[0]
-            for ext in ['.THM', '.XMP']:
-                meta_file = os.path.join(os.path.dirname(chemin_source), f"{base_name}{ext}")
+            dossier_source = os.path.dirname(chemin_source)
+            
+            for ext in self.config.METADATA_EXTENSIONS:
+                meta_file = os.path.join(dossier_source, f"{base_name}{ext}")
                 if os.path.exists(meta_file):
-                    shutil.move(meta_file, os.path.join(dossier_dest, os.path.basename(meta_file)))
+                    try:
+                        shutil.move(meta_file, os.path.join(dossier_dest, os.path.basename(meta_file)))
+                    except Exception as e:
+                        self.log_message(f"⚠️ Impossible de déplacer {meta_file}: {e}")
 
             self.log_message(f"✅ Déplacé : {nom_fichier} → {categorie}")
         except Exception as e:
