@@ -15,7 +15,7 @@ CATEGORIES = [
 ]
 
 # Utiliser des chemins relatifs ou configurer via variables d'environnement
-DOSSIER_BASE = os.path.join(os.path.expanduser("~"), "Documents", "photos", "tri_photos_raw")
+DOSSIER_BASE = os.path.join(os.path.dirname(__file__), "photos")
 DOSSIER_A_TRIER = os.path.join(DOSSIER_BASE, "a_trier")
 DOSSIER_TRIES = os.path.join(DOSSIER_BASE, "tries")
 
@@ -29,15 +29,15 @@ print(f"Utilisation de : {device}")
 
 try:
     model = SentenceTransformer('clip-ViT-B-32', device=device)
-    print("✅ Modèle CLIP chargé avec succès")
+    print("✅ Modèle CLIP-ViT-B-32 chargé avec succès")
 except Exception as e:
-    print(f"❌ Échec du chargement du modèle: {e}")
-    # Essayer un modèle plus léger
+    print(f"❌ Échec du chargement de CLIP-ViT-B-32: {e}")
+    print("   → Tentative avec un modèle plus léger...")
     try:
         model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
-        print("✅ Modèle all-MiniLM-L6-v2 chargé à la place")
+        print("✅ Modèle all-MiniLM-L6-v2 chargé avec succès")
     except Exception as e2:
-        print(f"❌ Échec du chargement du modèle de secours: {e2}")
+        print(f"❌ Échec du chargement de tous les modèles: {e2}")
         exit(1)
 
 # Préparer les textes pour les catégories
@@ -82,8 +82,8 @@ def raw_to_pil(raw_path):
 def classer_image(chemin_image):
     """Classifie une image dans une catégorie"""
     try:
-        # Priorité aux fichiers RAW
-        if chemin_image.lower().endswith(('.raw', '.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef', '.raf', '.x3f')):
+        # Priorité aux fichiers RAW (y compris .arp)
+        if chemin_image.lower().endswith(('.raw', '.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef', '.raf', '.x3f', '.arp')):
             image = raw_to_pil(chemin_image)
             if image is None:
                 return "autre"
@@ -104,7 +104,7 @@ def classer_image(chemin_image):
 
         # Vérification de confiance
         max_similarity = similarities.max().item()
-        if max_similarity < 0.2:  # Seuil de confiance plus bas
+        if max_similarity < 0.2:  # Seuil de confiance
             return "autre"
 
         return categorie
@@ -171,8 +171,8 @@ def trier_dossier(dossier):
                 if filepath.suffix.lower() not in ['.thm', '.xmp', '.json']:
                     files.append(filepath)
 
-        # Priorité aux fichiers RAW
-        raw_extensions = {'.raw', '.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef', '.raf', '.x3f'}
+        # Priorité aux fichiers RAW (y compris .arp)
+        raw_extensions = {'.raw', '.cr2', '.nef', '.arw', '.arp', '.dng', '.orf', '.rw2', '.pef', '.raf', '.x3f'}
         raw_files = [f for f in files if f.suffix.lower() in raw_extensions]
         other_files = [f for f in files if f not in raw_files]
         all_files = raw_files + other_files
