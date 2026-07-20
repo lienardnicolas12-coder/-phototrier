@@ -10,7 +10,7 @@ from PIL import Image
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                             QLabel, QLineEdit, QPushButton, QListWidget, QTextEdit,
                             QTabWidget, QFrame, QFileDialog, QMessageBox, QCheckBox,
-                            QGroupBox, QRadioButton)
+                            QGroupBox, QRadioButton, QInputDialog, QListWidgetItem)
 from PyQt5.QtGui import QPixmap, QIcon, QImage
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from sentence_transformers import SentenceTransformer, util
@@ -30,6 +30,7 @@ class Config:
     DOSSIER_TRIES = BASE_DIR / "tries"
     MODEL_SAVE_PATH = BASE_DIR / "models"
     TAGS_FILE = BASE_DIR / "tags.json"
+    CONFIG_FILE = BASE_DIR / "config.json"
 
     # Catégories et descriptions OPTIMISÉES
     CATEGORIES = {
@@ -55,6 +56,29 @@ class Config:
         cls.DOSSIER_A_TRIER.mkdir(parents=True, exist_ok=True)
         cls.DOSSIER_TRIES.mkdir(parents=True, exist_ok=True)
         cls.MODEL_SAVE_PATH.mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def save_config(cls, config_data):
+        """Sauvegarde la configuration dans un fichier JSON"""
+        try:
+            with open(cls.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            logging.error(f"Erreur de sauvegarde de la config: {e}")
+            return False
+
+    @classmethod
+    def load_config(cls):
+        """Charge la configuration depuis un fichier JSON"""
+        if cls.CONFIG_FILE.exists():
+            try:
+                with open(cls.CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logging.error(f"Erreur de chargement de la config: {e}")
+                return {}
+        return {}
 
 # ====================== WATCHDOG THREAD-SAFE ======================
 class WatchdogWorker(QThread):
@@ -194,8 +218,49 @@ class PhotoSorterApp(QMainWindow):
         self.tf_status = None
         self.folder_path_input = None
 
+        # Attributs pour les paramètres
+        self.storage_path_input = None
+        self.categories_list = None
+        self.category_name_input = None
+        self.category_desc_input = None
+
+        # Charger la configuration sauvegardée
+        self.load_saved_config()
+
         self.init_ui()
         self.load_models()
+
+    # ====================== CHARGEMENT DE LA CONFIGURATION ======================
+    def load_saved_config(self):
+        """Charge la configuration sauvegardée (dossier de stockage et catégories)"""
+        saved_config = Config.load_config()
+        
+        # Charger le dossier de stockage personnalisé
+        if 'storage_path' in saved_config:
+            custom_path = Path(saved_config['storage_path'])
+            if custom_path.exists():
+                self.config.BASE_DIR = custom_path
+                self.config.DOSSIER_A_TRIER = custom_path / "a_trier"
+                self.config.DOSSIER_TRIES = custom_path / "tries"
+                self.config.MODEL_SAVE_PATH = custom_path / "models"
+                self.config.TAGS_FILE = custom_path / "tags.json"
+                self.config.CONFIG_FILE = custom_path / "config.json"
+                # Recreate directories with new path
+                Config.ensure_directories()
+                # Update tag manager with new path
+                self.tag_manager = TagManager(self.config.TAGS_FILE)
+        
+        # Charger les catégories personnalisées
+        if 'categories' in saved_config:
+            self.config.CATEGORIES = saved_config['categories']
+
+    def save_current_config(self):
+        """Sauvegarde la configuration actuelle"""
+        config_data = {
+            'storage_path': str(self.config.BASE_DIR),
+            'categories': self.config.CATEGORIES
+        }
+        return Config.save_config(config_data)
 
     # ====================== UTILITAIRES ======================
     def pil2pixmap(self, pil_image):
@@ -235,10 +300,11 @@ class PhotoSorterApp(QMainWindow):
         self.setup_tags_tab()
         self.setup_tf_tab()
         self.setup_publish_tab()
+        self.setup_settings_tab()
 
     def setup_auto_tab(self):
         self.auto_tab = QWidget()
-        self.tabs.addTab(self.auto_tab, "📷 Tri Automatique")
+        self.tabs.addTab(self.auto_tab, "\ud83d\udcf7 Tri Automatique")
         layout = QVBoxLayout(self.auto_tab)
         layout.setSpacing(15)
 
@@ -287,7 +353,7 @@ class PhotoSorterApp(QMainWindow):
         layout.addWidget(watch_group)
 
         # Bouton Trier maintenant
-        sort_btn = QPushButton("📁 Trier maintenant")
+        sort_btn = QPushButton("\ud83d\udcc1 Trier maintenant")
         sort_btn.setStyleSheet("font-weight: bold;")
         sort_btn.clicked.connect(self.trier_dossier_maintenant)
         layout.addWidget(sort_btn)
@@ -303,7 +369,7 @@ class PhotoSorterApp(QMainWindow):
 
     def setup_tags_tab(self):
         self.tags_tab = QWidget()
-        self.tabs.addTab(self.tags_tab, "🏷️ Gestion des Tags")
+        self.tabs.addTab(self.tags_tab, "\ud83c\udff7\ufe0f Gestion des Tags")
         layout = QVBoxLayout(self.tags_tab)
 
         # Recherche par dossier
@@ -312,7 +378,7 @@ class PhotoSorterApp(QMainWindow):
         self.folder_path_input = QLineEdit()
         self.folder_path_input.setPlaceholderText("Dossier à scanner...")
         folder_search_layout.addWidget(self.folder_path_input)
-        browse_folder_btn = QPushButton("📁 Parcourir dossier")
+        browse_folder_btn = QPushButton("\ud83d\udcc1 Parcourir dossier")
         browse_folder_btn.clicked.connect(self.browse_folder_for_tags)
         folder_search_layout.addWidget(browse_folder_btn)
         folder_search_group.setLayout(folder_search_layout)
@@ -347,7 +413,7 @@ class PhotoSorterApp(QMainWindow):
         self.new_tag_input = QLineEdit()
         self.new_tag_input.setPlaceholderText("Ex: cheval, paysage...")
         tag_layout.addWidget(self.new_tag_input)
-        add_tag_btn = QPushButton("➕ Ajouter le tag")
+        add_tag_btn = QPushButton("\u2795 Ajouter le tag")
         add_tag_btn.clicked.connect(self.add_tag_to_image)
         tag_layout.addWidget(add_tag_btn)
         tag_group.setLayout(tag_layout)
@@ -360,7 +426,7 @@ class PhotoSorterApp(QMainWindow):
         self.tag_search.setPlaceholderText("Ex: cheval, paysage...")
         self.tag_search.setMinimumWidth(300)
         search_layout.addWidget(self.tag_search)
-        search_btn = QPushButton("🔍 Rechercher")
+        search_btn = QPushButton("\ud83d\udd0d Rechercher")
         search_btn.clicked.connect(self.search_by_tag)
         search_layout.addWidget(search_btn)
         search_group.setLayout(search_layout)
@@ -373,7 +439,7 @@ class PhotoSorterApp(QMainWindow):
 
     def setup_tf_tab(self):
         self.tf_tab = QWidget()
-        self.tabs.addTab(self.tf_tab, "🤖 Modèle TensorFlow")
+        self.tabs.addTab(self.tf_tab, "\ud83e\udd16 Modèle TensorFlow")
         layout = QVBoxLayout(self.tf_tab)
 
         # Sélection du modèle
@@ -388,12 +454,12 @@ class PhotoSorterApp(QMainWindow):
         layout.addWidget(model_frame)
 
         # Bouton pour télécharger un modèle par défaut
-        download_btn = QPushButton("❓ Comment obtenir un modèle ?")
+        download_btn = QPushButton("\u2753 Comment obtenir un modèle ?")
         download_btn.clicked.connect(self.download_default_model)
         layout.addWidget(download_btn)
 
         # Bouton charger
-        load_model_btn = QPushButton("📁 Charger le modèle TensorFlow")
+        load_model_btn = QPushButton("\ud83d\udcc1 Charger le modèle TensorFlow")
         load_model_btn.clicked.connect(self.load_tf_model)
         layout.addWidget(load_model_btn)
 
@@ -403,33 +469,350 @@ class PhotoSorterApp(QMainWindow):
 
     def setup_publish_tab(self):
         self.publish_tab = QWidget()
-        self.tabs.addTab(self.publish_tab, "📤 À Publier")
+        self.tabs.addTab(self.publish_tab, "\ud83d\udce4 À Publier")
         layout = QVBoxLayout(self.publish_tab)
         layout.addWidget(QLabel("Les photos triées sont disponibles dans le dossier de sortie sélectionné."))
         layout.addWidget(QLabel("Utilise le bouton 'Parcourir' dans l'onglet 'Tri Automatique' pour changer le dossier."))
 
+    def setup_settings_tab(self):
+        """Onglet Paramètres pour gérer le dossier de stockage et les catégories"""
+        self.settings_tab = QWidget()
+        self.tabs.addTab(self.settings_tab, "\u2699\ufe0f Paramètres")
+        layout = QVBoxLayout(self.settings_tab)
+        layout.setSpacing(15)
+
+        # ========== DOSSIER DE STOCKAGE ==========
+        storage_group = QGroupBox("\u2139 DOSSIER DE STOCKAGE")
+        storage_layout = QVBoxLayout()
+        
+        storage_path_frame = QFrame()
+        storage_path_layout = QHBoxLayout(storage_path_frame)
+        storage_path_layout.addWidget(QLabel("Dossier actuel:"))
+        self.storage_path_input = QLineEdit(str(self.config.BASE_DIR))
+        self.storage_path_input.setMinimumWidth(400)
+        storage_path_layout.addWidget(self.storage_path_input)
+        
+        browse_storage_btn = QPushButton("Changer de dossier...")
+        browse_storage_btn.clicked.connect(self.browse_storage_path)
+        storage_path_layout.addWidget(browse_storage_btn)
+        
+        storage_layout.addWidget(storage_path_frame)
+        storage_layout.addWidget(QLabel(f"Dossier à trier: {self.config.DOSSIER_A_TRIER}"))
+        storage_layout.addWidget(QLabel(f"Dossier triés: {self.config.DOSSIER_TRIES}"))
+        storage_group.setLayout(storage_layout)
+        layout.addWidget(storage_group)
+
+        # ========== CATÉGORIES ==========
+        categories_group = QGroupBox("\u2139 CATÉGORIES")
+        categories_layout = QVBoxLayout()
+        
+        # Liste des catégories
+        self.categories_list = QListWidget()
+        self.categories_list.setMinimumHeight(200)
+        self.refresh_categories_list()
+        categories_layout.addWidget(self.categories_list)
+        
+        # Boutons pour gérer les catégories
+        buttons_frame = QFrame()
+        buttons_layout = QHBoxLayout(buttons_frame)
+        
+        add_category_btn = QPushButton("\u2795 AJOUTER UNE CATÉGORIE")
+        add_category_btn.clicked.connect(self.add_category)
+        buttons_layout.addWidget(add_category_btn)
+        
+        edit_category_btn = QPushButton("\u270f Modifier")
+        edit_category_btn.clicked.connect(self.edit_category)
+        buttons_layout.addWidget(edit_category_btn)
+        
+        delete_category_btn = QPushButton("\u274c Supprimer")
+        delete_category_btn.clicked.connect(self.delete_category)
+        buttons_layout.addWidget(delete_category_btn)
+        
+        categories_layout.addWidget(buttons_frame)
+        categories_group.setLayout(categories_layout)
+        layout.addWidget(categories_group)
+
+        # ========== BOUTONS D'ACTION ==========
+        actions_frame = QFrame()
+        actions_layout = QHBoxLayout(actions_frame)
+        
+        save_btn = QPushButton("\ud83d\udcbe Enregistrer")
+        save_btn.setStyleSheet("font-weight: bold; background-color: #28a745;")
+        save_btn.clicked.connect(self.save_settings)
+        actions_layout.addWidget(save_btn)
+        
+        import_btn = QPushButton("\ud83d\udcc1 Importer")
+        import_btn.clicked.connect(self.import_categories)
+        actions_layout.addWidget(import_btn)
+        
+        export_btn = QPushButton("\ud83d\udce4 Exporter")
+        export_btn.clicked.connect(self.export_categories)
+        actions_layout.addWidget(export_btn)
+        
+        layout.addWidget(actions_frame)
+        
+        # Statut
+        self.settings_status = QLabel("")
+        self.settings_status.setStyleSheet("color: #28a745;")
+        layout.addWidget(self.settings_status)
+
+    def refresh_categories_list(self):
+        """Rafraîchit la liste des catégories dans l'interface"""
+        self.categories_list.clear()
+        for category_name, category_desc in self.config.CATEGORIES.items():
+            item = QListWidgetItem(f"{category_name}: {category_desc}")
+            item.setData(Qt.UserRole, category_name)
+            self.categories_list.addItem(item)
+
+    def browse_storage_path(self):
+        """Permet de changer le dossier de stockage principal"""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Sélectionner le dossier de stockage", str(self.config.BASE_DIR)
+        )
+        if folder:
+            self.storage_path_input.setText(folder)
+            new_base_dir = Path(folder)
+            
+            # Mettre à jour les chemins
+            self.config.BASE_DIR = new_base_dir
+            self.config.DOSSIER_A_TRIER = new_base_dir / "a_trier"
+            self.config.DOSSIER_TRIES = new_base_dir / "tries"
+            self.config.MODEL_SAVE_PATH = new_base_dir / "models"
+            self.config.TAGS_FILE = new_base_dir / "tags.json"
+            self.config.CONFIG_FILE = new_base_dir / "config.json"
+            
+            # Créer les répertoires
+            Config.ensure_directories()
+            
+            # Mettre à jour le tag manager
+            self.tag_manager = TagManager(self.config.TAGS_FILE)
+            
+            # Mettre à jour l'interface
+            self.entry_source.setText(str(self.config.DOSSIER_A_TRIER))
+            self.entry_output.setText(str(self.config.DOSSIER_TRIES))
+            
+            self.log_message(f"Dossier de stockage changé vers: {folder}")
+            self.settings_status.setText(f"\u2705 Dossier de stockage mis à jour: {folder}")
+
+    def add_category(self):
+        """Ajoute une nouvelle catégorie"""
+        dialog = QInputDialog()
+        dialog.setWindowTitle("Ajouter une catégorie")
+        dialog.setLabelText("Nom de la catégorie:")
+        dialog.setOkButtonText("Suivant")
+        dialog.setCancelButtonText("Annuler")
+        
+        if dialog.exec_() == QInputDialog.Accepted:
+            category_name = dialog.textValue().strip()
+            if not category_name:
+                QMessageBox.warning(self, "Erreur", "Le nom de la catégorie ne peut pas être vide!")
+                return
+            
+            if category_name in self.config.CATEGORIES:
+                QMessageBox.warning(self, "Erreur", f"La catégorie '{category_name}' existe déjà!")
+                return
+            
+            # Demander la description
+            desc_dialog = QInputDialog()
+            desc_dialog.setWindowTitle("Ajouter une catégorie")
+            desc_dialog.setLabelText(f"Description pour '{category_name}' (ex: 'une photo de paysage avec montagnes'):")
+            desc_dialog.setOkButtonText("Ajouter")
+            desc_dialog.setCancelButtonText("Annuler")
+            desc_dialog.setTextValue("")
+            
+            if desc_dialog.exec_() == QInputDialog.Accepted:
+                category_desc = desc_dialog.textValue().strip()
+                if not category_desc:
+                    category_desc = f"une photo de {category_name}"
+                
+                self.config.CATEGORIES[category_name] = category_desc
+                self.refresh_categories_list()
+                self.settings_status.setText(f"\u2705 Catégorie '{category_name}' ajoutée")
+                self.log_message(f"Catégorie ajoutée: {category_name}")
+
+    def edit_category(self):
+        """Modifie une catégorie existante"""
+        selected_items = self.categories_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "Erreur", "Veuillez sélectionner une catégorie à modifier!")
+            return
+        
+        item = selected_items[0]
+        old_name = item.data(Qt.UserRole)
+        old_desc = self.config.CATEGORIES[old_name]
+        
+        # Demander le nouveau nom
+        dialog = QInputDialog()
+        dialog.setWindowTitle("Modifier la catégorie")
+        dialog.setLabelText("Nouveau nom de la catégorie:")
+        dialog.setTextValue(old_name)
+        dialog.setOkButtonText("Suivant")
+        dialog.setCancelButtonText("Annuler")
+        
+        if dialog.exec_() == QInputDialog.Accepted:
+            new_name = dialog.textValue().strip()
+            if not new_name:
+                QMessageBox.warning(self, "Erreur", "Le nom de la catégorie ne peut pas être vide!")
+                return
+            
+            # Demander la nouvelle description
+            desc_dialog = QInputDialog()
+            desc_dialog.setWindowTitle("Modifier la catégorie")
+            desc_dialog.setLabelText(f"Nouvelle description pour '{new_name}':")
+            desc_dialog.setTextValue(old_desc)
+            desc_dialog.setOkButtonText("Enregistrer")
+            desc_dialog.setCancelButtonText("Annuler")
+            
+            if desc_dialog.exec_() == QInputDialog.Accepted:
+                new_desc = desc_dialog.textValue().strip()
+                if not new_desc:
+                    new_desc = f"une photo de {new_name}"
+                
+                # Mettre à jour
+                if old_name != new_name:
+                    # Créer une nouvelle entrée avec le nouveau nom
+                    self.config.CATEGORIES[new_name] = new_desc
+                    # Supprimer l'ancienne
+                    del self.config.CATEGORIES[old_name]
+                else:
+                    # Juste mettre à jour la description
+                    self.config.CATEGORIES[old_name] = new_desc
+                
+                self.refresh_categories_list()
+                self.settings_status.setText(f"\u2705 Catégorie '{old_name}' modifiée")
+                self.log_message(f"Catégorie modifiée: {old_name} -> {new_name}")
+
+    def delete_category(self):
+        """Supprime une catégorie"""
+        selected_items = self.categories_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "Erreur", "Veuillez sélectionner une catégorie à supprimer!")
+            return
+        
+        item = selected_items[0]
+        category_name = item.data(Qt.UserRole)
+        
+        # Ne pas permettre la suppression de la catégorie 'autre'
+        if category_name == "autre":
+            QMessageBox.warning(self, "Erreur", "La catégorie 'autre' ne peut pas être supprimée!")
+            return
+        
+        confirm = QMessageBox.question(
+            self, "Confirmer la suppression",
+            f"Êtes-vous sûr de vouloir supprimer la catégorie '{category_name}'?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            del self.config.CATEGORIES[category_name]
+            self.refresh_categories_list()
+            self.settings_status.setText(f"\u2705 Catégorie '{category_name}' supprimée")
+            self.log_message(f"Catégorie supprimée: {category_name}")
+
+    def save_settings(self):
+        """Sauvegarde les paramètres actuels"""
+        # Mettre à jour le chemin de stockage
+        new_storage_path = self.storage_path_input.text().strip()
+        if new_storage_path and new_storage_path != str(self.config.BASE_DIR):
+            new_base_dir = Path(new_storage_path)
+            if new_base_dir.exists():
+                self.config.BASE_DIR = new_base_dir
+                self.config.DOSSIER_A_TRIER = new_base_dir / "a_trier"
+                self.config.DOSSIER_TRIES = new_base_dir / "tries"
+                self.config.MODEL_SAVE_PATH = new_base_dir / "models"
+                self.config.TAGS_FILE = new_base_dir / "tags.json"
+                self.config.CONFIG_FILE = new_base_dir / "config.json"
+                
+                # Créer les répertoires
+                Config.ensure_directories()
+                
+                # Mettre à jour le tag manager
+                self.tag_manager = TagManager(self.config.TAGS_FILE)
+                
+                # Mettre à jour l'interface
+                self.entry_source.setText(str(self.config.DOSSIER_A_TRIER))
+                self.entry_output.setText(str(self.config.DOSSIER_TRIES))
+        
+        # Sauvegarder la configuration
+        if self.save_current_config():
+            self.settings_status.setText("\u2705 Paramètres enregistrés avec succès!")
+            self.log_message("Paramètres enregistrés")
+            QMessageBox.information(self, "Succès", "Les paramètres ont été enregistrés avec succès!")
+        else:
+            self.settings_status.setText("\u274c Erreur lors de l'enregistrement")
+            QMessageBox.critical(self, "Erreur", "Impossible d'enregistrer les paramètres!")
+
+    def import_categories(self):
+        """Importe des catégories depuis un fichier JSON"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Importer des catégories", str(self.config.BASE_DIR),
+            "Fichiers JSON (*.json);;Tous les fichiers (*)"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    imported_categories = json.load(f)
+                
+                if isinstance(imported_categories, dict):
+                    # Fusionner avec les catégories existantes
+                    for name, desc in imported_categories.items():
+                        self.config.CATEGORIES[name] = desc
+                    
+                    self.refresh_categories_list()
+                    self.settings_status.setText(f"\u2705 {len(imported_categories)} catégories importées")
+                    self.log_message(f"Catégories importées depuis {file_path}")
+                    QMessageBox.information(self, "Succès", f"{len(imported_categories)} catégories importées avec succès!")
+                else:
+                    QMessageBox.warning(self, "Erreur", "Le fichier ne contient pas un dictionnaire de catégories valide!")
+            except Exception as e:
+                QMessageBox.critical(self, "Erreur", f"Impossible d'importer le fichier:\n{e}")
+                self.log_message(f"Erreur d'import: {e}")
+
+    def export_categories(self):
+        """Exporte les catégories vers un fichier JSON"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Exporter des catégories", str(self.config.BASE_DIR),
+            "Fichiers JSON (*.json);;Tous les fichiers (*)"
+        )
+        
+        if file_path:
+            if not file_path.endswith('.json'):
+                file_path += '.json'
+            
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.config.CATEGORIES, f, indent=2, ensure_ascii=False)
+                
+                self.settings_status.setText(f"\u2705 Catégories exportées vers {file_path}")
+                self.log_message(f"Catégories exportées vers {file_path}")
+                QMessageBox.information(self, "Succès", f"Catégories exportées avec succès vers:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Erreur", f"Impossible d'exporter le fichier:\n{e}")
+                self.log_message(f"Erreur d'export: {e}")
+
     # ====================== CHARGEMENT DES MODÈLES ======================
     def load_models(self):
         """Charge le modèle CLIP"""
-        self.log_message("📁 Chargement du modèle CLIP (cela peut prendre 1-2 min)...")
-        self.log_message("   → Le modèle pèse ~500Mo. Sois patient !")
+        self.log_message("\ud83d\udcc1 Chargement du modèle CLIP (cela peut prendre 1-2 min)...")
+        self.log_message("   \u2192 Le modèle pèse ~500Mo. Sois patient !")
         
         try:
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.log_message(f"   → Appareil utilisé : {device}")
+            self.log_message(f"   \u2192 Appareil utilisé : {device}")
             
             # Essayer de charger CLIP-ViT-B-32
             try:
                 self.model_clip = SentenceTransformer('clip-ViT-B-32', device=device)
-                self.log_message("✅ Modèle CLIP-ViT-B-32 chargé avec succès !")
+                self.log_message("\u2705 Modèle CLIP-ViT-B-32 chargé avec succès !")
             except Exception as e1:
-                self.log_message(f"⚠️ Échec de CLIP-ViT-B-32: {e1}")
-                self.log_message("   → Tentative avec un modèle plus léger...")
+                self.log_message(f"\u26a0\ufe0f Échec de CLIP-ViT-B-32: {e1}")
+                self.log_message("   \u2192 Tentative avec un modèle plus léger...")
                 try:
                     self.model_clip = SentenceTransformer('all-MiniLM-L6-v2', device=device)
-                    self.log_message("✅ Modèle all-MiniLM-L6-v2 chargé avec succès !")
+                    self.log_message("\u2705 Modèle all-MiniLM-L6-v2 chargé avec succès !")
                 except Exception as e2:
-                    self.log_message(f"❌ Échec du chargement de tous les modèles: {e2}")
+                    self.log_message(f"\u274c Échec du chargement de tous les modèles: {e2}")
                     QMessageBox.critical(
                         self, "Erreur", 
                         f"Échec du chargement des modèles:\n{e2}\n\n"
@@ -437,13 +820,13 @@ class PhotoSorterApp(QMainWindow):
                     )
                     return
             
-            self.log_message("   → Encodage des catégories...")
+            self.log_message("   \u2192 Encodage des catégories...")
             self.text_inputs = list(self.config.CATEGORIES.values())
             self.text_embeddings = self.model_clip.encode(self.text_inputs, convert_to_tensor=True)
-            self.log_message("✅ Modèle prêt à l'emploi !")
+            self.log_message("\u2705 Modèle prêt à l'emploi !")
             
         except Exception as e:
-            self.log_message(f"❌ Échec du chargement de CLIP: {e}")
+            self.log_message(f"\u274c Échec du chargement de CLIP: {e}")
             QMessageBox.critical(
                 self, "Erreur", 
                 f"Échec du chargement de CLIP:\n{e}\n\n"
@@ -464,10 +847,10 @@ class PhotoSorterApp(QMainWindow):
             # Ou comme fichier .h5/.keras
             else:
                 self.model_tf = tf.keras.models.load_model(path)
-            self.tf_status.setText(f"✅ Modèle chargé : {os.path.basename(path)}")
+            self.tf_status.setText(f"\u2705 Modèle chargé : {os.path.basename(path)}")
             self.log_message(f"Modèle TensorFlow chargé : {path}")
         except Exception as e:
-            self.tf_status.setText(f"❌ Erreur : {e}")
+            self.tf_status.setText(f"\u274c Erreur : {e}")
             self.log_message(f"Échec du chargement du modèle TF : {e}")
             QMessageBox.critical(
                 self, "Erreur",
@@ -538,7 +921,7 @@ class PhotoSorterApp(QMainWindow):
                         all_images.append(str(filepath))
 
             if not all_images:
-                self.log_message("❌ Aucune image trouvée dans ce dossier.")
+                self.log_message("\u274c Aucune image trouvée dans ce dossier.")
                 return
 
             # Filtrer par tag si un tag est saisi
@@ -556,9 +939,9 @@ class PhotoSorterApp(QMainWindow):
                 tag_str = f" [Tags: {', '.join(tags)}]" if tags else "[Aucun tag]"
                 self.search_results.addItem(f"{os.path.basename(img_path)}{tag_str} ({img_path})")
 
-            self.log_message(f"✅ {len(all_images)} image(s) trouvée(s) dans {folder}.")
+            self.log_message(f"\u2705 {len(all_images)} image(s) trouvée(s) dans {folder}.")
         except Exception as e:
-            self.log_message(f"❌ Erreur lors du scan du dossier: {e}")
+            self.log_message(f"\u274c Erreur lors du scan du dossier: {e}")
 
     # ====================== GESTION DES TAGS ======================
     def add_tag_to_image(self):
@@ -575,7 +958,7 @@ class PhotoSorterApp(QMainWindow):
 
         self.tag_manager.add_tag(image_path, new_tag)
         self.new_tag_input.clear()
-        self.log_message(f"✅ Tag '{new_tag}' ajouté à {os.path.basename(image_path)}")
+        self.log_message(f"\u2705 Tag '{new_tag}' ajouté à {os.path.basename(image_path)}")
         self.load_image_tags(image_path)
 
     def load_image_tags(self, image_path):
@@ -585,7 +968,7 @@ class PhotoSorterApp(QMainWindow):
             self.current_tags_label.setText(f"Tags actuels : {', '.join(tags) if tags else 'Aucun'}")
             self.log_message(f"Tags pour {os.path.basename(image_path)}: {tags}")
         except Exception as e:
-            self.log_message(f"⚠️ Erreur de chargement des tags: {e}")
+            self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
 
     def search_by_tag(self):
         """Recherche des images par tag dans le dossier sélectionné"""
@@ -599,7 +982,7 @@ class PhotoSorterApp(QMainWindow):
             self.scan_folder_for_tags(folder)  # Affiche toutes les images si aucun tag
             return
 
-        self.log_message(f"🔍 Recherche du tag '{tag}' dans {folder}...")
+        self.log_message(f"\ud83d\udd0d Recherche du tag '{tag}' dans {folder}...")
         results = self.tag_manager.get_images_by_tag(tag)
         results = [r for r in results if r.startswith(folder)]  # Filtrer par dossier
         self.search_results.clear()
@@ -609,10 +992,10 @@ class PhotoSorterApp(QMainWindow):
                 tags = self.tag_manager.get_tags(img_path)
                 tag_str = f" [Tags: {', '.join(tags)}]"
                 self.search_results.addItem(f"{os.path.basename(img_path)}{tag_str} ({img_path})")
-            self.log_message(f"✅ {len(results)} résultat(s) trouvé(s).")
+            self.log_message(f"\u2705 {len(results)} résultat(s) trouvé(s).")
         else:
-            self.search_results.addItem("❌ Aucun résultat trouvé.")
-            self.log_message("❌ Aucun résultat trouvé.")
+            self.search_results.addItem("\u274c Aucun résultat trouvé.")
+            self.log_message("\u274c Aucun résultat trouvé.")
 
     def load_image_from_search(self, item):
         """Charge une image depuis les résultats de recherche"""
@@ -636,7 +1019,7 @@ class PhotoSorterApp(QMainWindow):
                 pixmap = self.pil2pixmap(image)
                 self.image_label.setPixmap(pixmap)
         except Exception as e:
-            self.log_message(f"⚠️ Erreur de chargement de l'image: {e}")
+            self.log_message(f"\u26a0\ufe0f Erreur de chargement de l'image: {e}")
             self.image_label.clear()
 
     def download_default_model(self):
@@ -676,22 +1059,22 @@ class PhotoSorterApp(QMainWindow):
             self.watchdog_worker = WatchdogWorker(str(self.config.DOSSIER_A_TRIER))
             self.watchdog_worker.file_detected.connect(self.on_file_detected)
             self.watchdog_worker.start()
-            self.log_message(f"👁️ Surveillance active sur : {self.config.DOSSIER_A_TRIER}")
+            self.log_message(f"\ud83d\udc41\ufe0f Surveillance active sur : {self.config.DOSSIER_A_TRIER}")
 
     def stop_watchdog(self):
         if self.watchdog_worker:
             self.watchdog_worker.stop()
             self.watchdog_worker = None
-            self.log_message("🛑 Surveillance arrêtée.")
+            self.log_message("\ud83d\uded1 Surveillance arrêtée.")
 
     def on_file_detected(self, file_path):
-        self.log_message(f"📷 Nouvelle photo détectée : {file_path}")
+        self.log_message(f"\ud83d\udcf7 Nouvelle photo détectée : {file_path}")
         self.classer_et_deplacer(file_path)
 
     # ====================== TRI ET CLASSIFICATION ======================
     def trier_dossier_maintenant(self):
         """Trie le dossier sélectionné maintenant"""
-        self.log_message("📁 Tri du dossier en cours...")
+        self.log_message("\ud83d\udcc1 Tri du dossier en cours...")
         self.trier_dossier(str(self.config.DOSSIER_A_TRIER))
 
     def trier_dossier(self, dossier):
@@ -708,14 +1091,14 @@ class PhotoSorterApp(QMainWindow):
             other_files = [f for f in files if f not in raw_files]
             all_files = raw_files + other_files
 
-            self.log_message(f"📁 Trouvé {len(all_files)} fichier(s) à trier")
+            self.log_message(f"\ud83d\udcc1 Trouvé {len(all_files)} fichier(s) à trier")
             
             for filepath in all_files:
-                self.log_message(f"📷 Tri de : {filepath}")
+                self.log_message(f"\ud83d\udcf7 Tri de : {filepath}")
                 self.classer_et_deplacer(str(filepath))
                 
         except Exception as e:
-            self.log_message(f"❌ Erreur lors du tri : {e}")
+            self.log_message(f"\u274c Erreur lors du tri : {e}")
 
     def classer_et_deplacer(self, chemin_image):
         """Classifie et déplace une image"""
@@ -727,7 +1110,7 @@ class PhotoSorterApp(QMainWindow):
                 categorie = self.classer_image_clip(chemin_image)
             self.deplacer_image_et_metadonnees(chemin_image, categorie)
         except Exception as e:
-            self.log_message(f"⚠️ Erreur avec {chemin_image}: {e}")
+            self.log_message(f"\u26a0\ufe0f Erreur avec {chemin_image}: {e}")
 
     def classer_image_clip(self, chemin_image):
         """Classifie une image avec CLIP"""
@@ -740,7 +1123,7 @@ class PhotoSorterApp(QMainWindow):
                 try:
                     image = Image.open(chemin_image)
                 except Exception as e:
-                    self.log_message(f"⚠️ Erreur d'ouverture de {chemin_image}: {e}")
+                    self.log_message(f"\u26a0\ufe0f Erreur d'ouverture de {chemin_image}: {e}")
                     return "autre"
 
             # TAILLE AUGMENTÉE pour plus de précision
@@ -757,7 +1140,7 @@ class PhotoSorterApp(QMainWindow):
                 return "autre"
             return categorie
         except Exception as e:
-            self.log_message(f"⚠️ Erreur de classification CLIP pour {chemin_image}: {e}")
+            self.log_message(f"\u26a0\ufe0f Erreur de classification CLIP pour {chemin_image}: {e}")
             return "autre"
 
     def classer_image_tf(self, chemin_image):
@@ -783,7 +1166,7 @@ class PhotoSorterApp(QMainWindow):
             categorie = list(self.config.CATEGORIES.keys())[np.argmax(predictions[0])]
             return categorie
         except Exception as e:
-            self.log_message(f"⚠️ Erreur de classification TF pour {chemin_image}: {e}")
+            self.log_message(f"\u26a0\ufe0f Erreur de classification TF pour {chemin_image}: {e}")
             return "autre"
 
     def raw_to_pil(self, raw_path):
@@ -798,7 +1181,7 @@ class PhotoSorterApp(QMainWindow):
                 )
                 return Image.fromarray(rgb_array.astype('uint8'))
         except Exception as e:
-            self.log_message(f"⚠️ Erreur avec {raw_path}: {e}")
+            self.log_message(f"\u26a0\ufe0f Erreur avec {raw_path}: {e}")
             return None
 
     def deplacer_image_et_metadonnees(self, chemin_source, categorie):
@@ -833,11 +1216,11 @@ class PhotoSorterApp(QMainWindow):
                     try:
                         shutil.move(meta_file, os.path.join(dossier_dest, os.path.basename(meta_file)))
                     except Exception as e:
-                        self.log_message(f"⚠️ Impossible de déplacer {meta_file}: {e}")
+                        self.log_message(f"\u26a0\ufe0f Impossible de déplacer {meta_file}: {e}")
 
-            self.log_message(f"✅ Déplacé : {nom_fichier} → {categorie}")
+            self.log_message(f"\u2705 Déplacé : {nom_fichier} \u2192 {categorie}")
         except Exception as e:
-            self.log_message(f"⚠️ Impossible de déplacer {chemin_source}: {e}")
+            self.log_message(f"\u26a0\ufe0f Impossible de déplacer {chemin_source}: {e}")
 
     # ====================== FERMETURE ======================
     def closeEvent(self, event):
