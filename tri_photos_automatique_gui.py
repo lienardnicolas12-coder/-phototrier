@@ -422,6 +422,7 @@ class PhotoSorterApp(QMainWindow):
 
         # Résultats de recherche
         self.search_results = QListWidget()
+        self.search_results.itemDoubleClicked.connect(self.load_image_from_results)
         layout.addWidget(self.search_results)
 
     def setup_tf_tab(self):
