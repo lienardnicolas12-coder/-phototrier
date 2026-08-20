@@ -959,6 +959,30 @@ class PhotoSorterApp(QMainWindow):
         except Exception as e:
             self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
 
+    def load_image_preview(self, image_path):
+        """Charge l'aperçu d'une image dans image_label"""
+        try:
+            if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
+                image = self.raw_to_pil(image_path)
+            else:
+                image = Image.open(image_path)
+            
+            if image:
+                image.thumbnail((400, 400))
+                pixmap = self.pil2pixmap(image)
+                self.image_label.setPixmap(pixmap)
+        except Exception as e:
+            self.log_message(f"⚠️ Erreur de chargement de l'image: {e}")
+            self.image_label.clear()
+
+    def load_image_from_results(self, item):
+        """Charge une image depuis les résultats de recherche"""
+        text = item.text()
+        if " (" in text and ")" in text:
+            image_path = text.split(" (")[1][:-1]  # Extraire le chemin entre parenthèses
+            self.load_image_preview(image_path)
+            self.load_image_tags(image_path)
+
     def search_by_tag(self):
         """Recherche des images par tag dans le dossier sélectionné"""
         folder = self.folder_path_input.text().strip()
