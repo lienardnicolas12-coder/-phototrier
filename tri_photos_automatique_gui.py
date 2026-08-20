@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ====================== CONFIGURATION ======================
 class Config:
     # Utiliser des chemins relatifs ou basés sur le répertoire personnel
-    BASE_DIR = Path.home() / "Documents" / "photos" / "tri_photo_RAW"
+    BASE_DIR = Path("C:/Users/ln/workspace/lienardnicolas12-coder__-phototrier")
     DOSSIER_A_TRIER = BASE_DIR / "a_trier"
     DOSSIER_TRIES = BASE_DIR / "tries"
     MODEL_SAVE_PATH = BASE_DIR / "models"
