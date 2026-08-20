@@ -208,7 +208,6 @@ class PhotoSorterApp(QMainWindow):
         self.entry_output = None
         self.log_text = None
         self.check_watch = None
-        self.entry_image_path = None
         self.new_tag_input = None
         self.tag_search = None
         self.search_results = None
@@ -384,14 +383,6 @@ class PhotoSorterApp(QMainWindow):
         folder_search_group.setLayout(folder_search_layout)
         layout.addWidget(folder_search_group)
 
-        # Sélection de l'image
-        select_frame = QFrame()
-        select_layout = QHBoxLayout(select_frame)
-        self.entry_image_path = QLineEdit()
-        self.entry_image_path.setMinimumWidth(400)
-        browse_img_btn = QPushButton("Parcourir image")
-        browse_img_btn.clicked.connect(self.browse_image)
-        select_layout.addWidget(self.entry_image_path)
         select_layout.addWidget(browse_img_btn)
         layout.addWidget(select_frame)
 
@@ -399,7 +390,7 @@ class PhotoSorterApp(QMainWindow):
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setMinimumHeight(300)
-        self.image_label.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
+        self.image_label.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e; qproperty-alignment: AlignCenter;")
         layout.addWidget(self.image_label)
 
         # Tags actuels
@@ -889,14 +880,6 @@ class PhotoSorterApp(QMainWindow):
         if file_or_dir:
             self.tf_model_path.setText(file_or_dir)
 
-    def browse_image(self):
-        file, _ = QFileDialog.getOpenFileName(
-            self, "Sélectionner une image", str(self.config.DOSSIER_TRIES),
-            "Images (*.jpg *.jpeg *.png *.raw *.cr2 *.nef *.arw *.dng);;Tous les fichiers (*)"
-        )
-        if file:
-            self.entry_image_path.setText(file)
-            self.load_image_preview(file)
             self.load_image_tags(file)
 
     def browse_folder_for_tags(self):
@@ -997,26 +980,7 @@ class PhotoSorterApp(QMainWindow):
             self.search_results.addItem("\u274c Aucun résultat trouvé.")
             self.log_message("\u274c Aucun résultat trouvé.")
 
-    def load_image_from_search(self, item):
-        """Charge une image depuis les résultats de recherche"""
-        text = item.text()
-        if " (" in text and ")" in text:
-            image_path = text.split(" (")[1][:-1]  # Extraire le chemin entre parenthèses
-            self.entry_image_path.setText(image_path)
-            self.load_image_preview(image_path)
             self.load_image_tags(image_path)
-
-    def load_image_preview(self, image_path):
-        """Charge l'aperçu d'une image"""
-        try:
-            if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
-                image = self.raw_to_pil(image_path)
-            else:
-                image = Image.open(image_path)
-            
-            if image:
-                image.thumbnail((400, 400))
-                pixmap = self.pil2pixmap(image)
                 self.image_label.setPixmap(pixmap)
         except Exception as e:
             self.log_message(f"\u26a0\ufe0f Erreur de chargement de l'image: {e}")
