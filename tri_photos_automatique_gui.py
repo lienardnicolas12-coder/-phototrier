@@ -382,8 +382,6 @@ class PhotoSorterApp(QMainWindow):
         folder_search_layout.addWidget(browse_folder_btn)
         folder_search_group.setLayout(folder_search_layout)
         layout.addWidget(folder_search_group)
-
-        select_layout.addWidget(browse_img_btn)
         layout.addWidget(select_frame)
 
         # Aperçu de l'image
