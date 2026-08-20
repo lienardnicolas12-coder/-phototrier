@@ -980,12 +980,6 @@ class PhotoSorterApp(QMainWindow):
             self.search_results.addItem("\u274c Aucun résultat trouvé.")
             self.log_message("\u274c Aucun résultat trouvé.")
 
-            self.load_image_tags(image_path)
-                self.image_label.setPixmap(pixmap)
-        except Exception as e:
-            self.log_message(f"\u26a0\ufe0f Erreur de chargement de l'image: {e}")
-            self.image_label.clear()
-
     def download_default_model(self):
         """Affiche des instructions pour obtenir un modèle TensorFlow"""
         msg = QMessageBox()
