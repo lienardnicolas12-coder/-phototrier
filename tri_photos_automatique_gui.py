@@ -422,7 +422,6 @@ class PhotoSorterApp(QMainWindow):
 
         # Résultats de recherche
         self.search_results = QListWidget()
-        self.search_results.itemDoubleClicked.connect(self.load_image_from_search)
         layout.addWidget(self.search_results)
 
     def setup_tf_tab(self):
@@ -923,13 +922,19 @@ class PhotoSorterApp(QMainWindow):
         except Exception as e:
             self.log_message(f"\u274c Erreur lors du scan du dossier: {e}")
 
-    # ====================== GESTION DES TAGS ======================
     def add_tag_to_image(self):
-        """Ajoute un tag à l'image actuellement sélectionnée"""
-        image_path = self.entry_image_path.text() if self.entry_image_path else ""
-        if not image_path or not os.path.exists(image_path):
-            QMessageBox.warning(self, "Erreur", "Aucune image valide sélectionnée !")
+        """Ajoute un tag à l'image actuellement sélectionnée dans les résultats"""
+        selected_items = self.search_results.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "Erreur", "Aucune image sélectionnée dans les résultats !")
             return
+
+        item = selected_items[0]
+        text = item.text()
+        if " (" in text and ")" in text:
+            image_path = text.split(" (")[1][:-1]  # Extraire le chemin entre parenthèses
+        else:
+            image_path = text
 
         new_tag = self.new_tag_input.text().strip()
         if not new_tag:
@@ -938,6 +943,9 @@ class PhotoSorterApp(QMainWindow):
 
         self.tag_manager.add_tag(image_path, new_tag)
         self.new_tag_input.clear()
+        self.log_message(f"✅ Tag '{new_tag}' ajouté à {os.path.basename(image_path)}")
+        self.load_image_tags(image_path)
+
         self.log_message(f"\u2705 Tag '{new_tag}' ajouté à {os.path.basename(image_path)}")
         self.load_image_tags(image_path)
 
