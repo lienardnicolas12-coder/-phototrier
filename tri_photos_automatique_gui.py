@@ -1011,8 +1011,10 @@ class PhotoSorterApp(QMainWindow):
                 image = Image.open(image_path)
             
             if image:
-                new_width = int(image.width * self.zoom_factor)
-                new_height = int(image.height * self.zoom_factor)
+                # Forcer zoom_factor à rester dans [min_zoom, max_zoom]
+                self.zoom_factor = max(self.min_zoom, min(self.zoom_factor, self.max_zoom))
+                new_width = max(1, int(image.width * self.zoom_factor))  # Éviter <= 0
+                new_height = max(1, int(image.height * self.zoom_factor))  # Éviter <= 0
                 image = image.resize((new_width, new_height), Image.LANCZOS)
                 pixmap = self.pil2pixmap(image)
                 self.image_label.setPixmap(pixmap)
@@ -1031,6 +1033,8 @@ class PhotoSorterApp(QMainWindow):
     def zoom_out(self):
         """Diminue le zoom de 20%"""
         self.zoom_factor = max(self.zoom_factor / 1.2, self.min_zoom)
+        # Forcer le zoom_factor à rester >= min_zoom
+        self.zoom_factor = max(self.zoom_factor, self.min_zoom)
         if self.current_image_path:
             self.load_image_preview(self.current_image_path)
 
