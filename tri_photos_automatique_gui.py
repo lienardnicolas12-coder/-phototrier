@@ -403,8 +403,6 @@ class PhotoSorterApp(QMainWindow):
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setMinimumHeight(300)
         self.image_label.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
-        # Forcer le centrage du contenu
-        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.image_label)
 
         # Tags actuels
@@ -894,7 +892,6 @@ class PhotoSorterApp(QMainWindow):
         if file_or_dir:
             self.tf_model_path.setText(file_or_dir)
 
-            self.load_image_tags(file)
 
     def browse_folder_for_tags(self):
         """Parcourir un dossier pour chercher des images taguées"""
