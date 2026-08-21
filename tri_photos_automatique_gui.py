@@ -391,7 +391,9 @@ class PhotoSorterApp(QMainWindow):
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setMinimumHeight(300)
-        self.image_label.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e; qproperty-alignment: AlignCenter;")
+        self.image_label.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
+        # Forcer le centrage du contenu
+        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.image_label)
 
         # Tags actuels
@@ -964,7 +966,7 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
 
     def load_image_preview(self, image_path):
-        """Charge l'aperçu d'une image dans image_label"""
+        """Charge l'aperçu d'une image dans image_label (centré)"""
         try:
             if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
                 image = self.raw_to_pil(image_path)
@@ -975,6 +977,8 @@ class PhotoSorterApp(QMainWindow):
                 image.thumbnail((400, 400))
                 pixmap = self.pil2pixmap(image)
                 self.image_label.setPixmap(pixmap)
+                # Forcer le centrage du pixmap dans le QLabel
+                self.image_label.setAlignment(Qt.AlignCenter)
         except Exception as e:
             self.log_message(f"⚠️ Erreur de chargement de l'image: {e}")
             self.image_label.clear()
