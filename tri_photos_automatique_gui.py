@@ -214,6 +214,12 @@ class PhotoSorterApp(QMainWindow):
         self.watchdog_worker = None
         self.text_embeddings = None
 
+        # Attributs pour le zoom
+        self.zoom_factor = 1.0
+        self.min_zoom = 0.1
+        self.max_zoom = 3.0
+        self.current_image_path = None
+
         # Attributs de l'interface
         self.entry_source = None
         self.entry_output = None
@@ -404,6 +410,29 @@ class PhotoSorterApp(QMainWindow):
         self.image_label.setMinimumHeight(300)
         self.image_label.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
         layout.addWidget(self.image_label)
+
+        # Boutons de zoom
+        zoom_frame = QFrame()
+        zoom_layout = QHBoxLayout(zoom_frame)
+        zoom_layout.addStretch()
+
+        zoom_in_btn = QPushButton("+ Zoom")
+        zoom_in_btn.setStyleSheet("font-size: 12px;")
+        zoom_in_btn.clicked.connect(self.zoom_in)
+        zoom_layout.addWidget(zoom_in_btn)
+
+        zoom_out_btn = QPushButton("- Zoom")
+        zoom_out_btn.setStyleSheet("font-size: 12px;")
+        zoom_out_btn.clicked.connect(self.zoom_out)
+        zoom_layout.addWidget(zoom_out_btn)
+
+        zoom_reset_btn = QPushButton("Reset Zoom")
+        zoom_reset_btn.setStyleSheet("font-size: 12px;")
+        zoom_reset_btn.clicked.connect(self.zoom_reset)
+        zoom_layout.addWidget(zoom_reset_btn)
+
+        zoom_layout.addStretch()
+        layout.addWidget(zoom_frame)
 
         # Tags actuels
         self.current_tags_label = QLabel("Tags actuels : Aucun")
@@ -974,7 +1003,7 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
 
     def load_image_preview(self, image_path):
-        """Charge l'aperçu d'une image dans image_label (centré)"""
+        """Charge l'aperçu d'une image dans image_label avec zoom"""
         try:
             if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
                 image = self.raw_to_pil(image_path)
@@ -982,14 +1011,34 @@ class PhotoSorterApp(QMainWindow):
                 image = Image.open(image_path)
             
             if image:
-                image.thumbnail((400, 400))
+                new_width = int(image.width * self.zoom_factor)
+                new_height = int(image.height * self.zoom_factor)
+                image = image.resize((new_width, new_height), Image.LANCZOS)
                 pixmap = self.pil2pixmap(image)
                 self.image_label.setPixmap(pixmap)
-                # Forcer le centrage du pixmap dans le QLabel
                 self.image_label.setAlignment(Qt.AlignCenter)
+                self.current_image_path = image_path
         except Exception as e:
             self.log_message(f"⚠️ Erreur de chargement de l'image: {e}")
             self.image_label.clear()
+
+    def zoom_in(self):
+        """Augmente le zoom de 20%"""
+        self.zoom_factor = min(self.zoom_factor * 1.2, self.max_zoom)
+        if self.current_image_path:
+            self.load_image_preview(self.current_image_path)
+
+    def zoom_out(self):
+        """Diminue le zoom de 20%"""
+        self.zoom_factor = max(self.zoom_factor / 1.2, self.min_zoom)
+        if self.current_image_path:
+            self.load_image_preview(self.current_image_path)
+
+    def zoom_reset(self):
+        """Réinitialise le zoom à 100%"""
+        self.zoom_factor = 1.0
+        if self.current_image_path:
+            self.load_image_preview(self.current_image_path)
 
     def load_image_from_results(self, item):
         """Charge une image depuis les résultats de recherche"""
