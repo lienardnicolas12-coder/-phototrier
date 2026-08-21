@@ -217,7 +217,7 @@ class PhotoSorterApp(QMainWindow):
         # Attributs pour le zoom
         self.zoom_factor = 1.0
         self.min_zoom = 0.1
-        self.max_zoom = 3.0
+        self.max_zoom = 2.0
         self.current_image_path = None
 
         # Attributs de l'interface
@@ -1011,11 +1011,24 @@ class PhotoSorterApp(QMainWindow):
                 image = Image.open(image_path)
             
             if image:
-                # Forcer zoom_factor à rester dans [min_zoom, max_zoom]
+                # Redimensionner à 800x600px max AVANT d'appliquer le zoom
+                max_width, max_height = 800, 600
+                if image.width > max_width or image.height > max_height:
+                    # Calculer le ratio pour maintenir les proportions
+                    width_ratio = max_width / image.width
+                    height_ratio = max_height / image.height
+                    scale_ratio = min(width_ratio, height_ratio)
+                    image = image.resize((
+                        max(1, int(image.width * scale_ratio)),
+                        max(1, int(image.height * scale_ratio))
+                    ), Image.LANCZOS)
+                
+                # Appliquer le zoom (déjà limité entre min_zoom et max_zoom)
                 self.zoom_factor = max(self.min_zoom, min(self.zoom_factor, self.max_zoom))
-                new_width = max(1, int(image.width * self.zoom_factor))  # Éviter <= 0
-                new_height = max(1, int(image.height * self.zoom_factor))  # Éviter <= 0
+                new_width = max(1, int(image.width * self.zoom_factor))
+                new_height = max(1, int(image.height * self.zoom_factor))
                 image = image.resize((new_width, new_height), Image.LANCZOS)
+                
                 pixmap = self.pil2pixmap(image)
                 self.image_label.setPixmap(pixmap)
                 self.image_label.setAlignment(Qt.AlignCenter)
