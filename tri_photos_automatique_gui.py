@@ -383,6 +383,10 @@ class PhotoSorterApp(QMainWindow):
         folder_search_group.setLayout(folder_search_layout)
         layout.addWidget(folder_search_group)
 
+        # Champ masqué pour la compatibilité (anciennement "Recherche par image")
+        self.entry_image_path = QLineEdit()
+        self.entry_image_path.setVisible(False)  # Masqué mais présent pour la compatibilité
+
         # Aperçu de l'image
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignCenter)
