@@ -10,7 +10,7 @@ from PIL import Image
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                             QLabel, QLineEdit, QPushButton, QListWidget, QTextEdit,
                             QTabWidget, QFrame, QFileDialog, QMessageBox, QCheckBox,
-                            QGroupBox, QRadioButton, QInputDialog, QListWidgetItem)
+                            QGroupBox, QRadioButton, QInputDialog, QListWidgetItem, QSizePolicy)
 from PyQt5.QtGui import QPixmap, QIcon, QImage
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from sentence_transformers import SentenceTransformer, util
@@ -123,9 +123,20 @@ class TagManager:
         if self.tags_file.exists():
             try:
                 with open(self.tags_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    loaded_tags = json.load(f)
+                    # Convertir les listes en sets pour une gestion optimale
+                    return {path: set(tags) for path, tags in loaded_tags.items()}
+            except json.JSONDecodeError as e:
+                logging.error(f"❌ Erreur de syntaxe JSON dans tags.json: {e}. Le fichier sera réinitialisé.")
+                # Réinitialiser le fichier avec un JSON vide
+                try:
+                    with open(self.tags_file, 'w', encoding='utf-8') as f:
+                        json.dump({}, f)
+                except Exception as e2:
+                    logging.error(f"❌ Impossible de réinitialiser tags.json: {e2}")
+                return {}
             except Exception as e:
-                logging.error(f"Erreur de chargement des tags: {e}")
+                logging.error(f"❌ Erreur de chargement des tags: {e}")
                 return {}
         return {}
 
