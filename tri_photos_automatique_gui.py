@@ -1312,6 +1312,42 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"\u274c Erreur lors du tri : {e}")
 
 
+
+    def search_by_tag(self):
+        """Recherche des images par tag dans le dossier sélectionné"""
+        folder = self.folder_path_input.text().strip()
+        if not folder or not os.path.isdir(folder):
+            QMessageBox.warning(self, "Erreur", "Aucun dossier valide sélectionné !")
+            return
+
+        tag = self.tag_search.text().strip()
+        if not tag:
+            self.scan_folder_for_tags(folder)  # Affiche toutes les images si aucun tag
+            return
+
+        self.log_message(f"\ud83d\udd0d Recherche du tag '{tag}' dans {folder}...")
+        results = self.tag_manager.get_images_by_tag(tag)
+        results = [r for r in results if r.startswith(folder)]  # Filtrer par dossier
+        self.search_results.clear()
+
+        if results:
+            for img_path in results:
+                tags = self.tag_manager.get_tags(img_path)
+                tag_str = f" [Tags: {'\u002c '.join(tags)}]"
+                self.search_results.addItem(f"{os.path.basename(img_path)}{tag_str} ({img_path})")
+            self.log_message(f"\u2705 {len(results)} résultat(s) trouvé(s).")
+        else:
+            self.search_results.addItem("\u274c Aucun résultat trouvé.")
+            self.log_message("\u274c Aucun résultat trouvé.")
+
+    def load_image_from_results(self, item):
+        """Charge une image depuis les résultats de recherche"""
+        text = item.text()
+        if " (" in text and ")" in text:
+            image_path = text.split(" (")[1][:-1]  # Extraire le chemin entre parenthèses
+            self.load_image_preview(image_path)
+            self.load_image_tags(image_path)
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = PhotoSorterApp()
