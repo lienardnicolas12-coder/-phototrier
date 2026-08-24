@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                             QTabWidget, QFrame, QFileDialog, QMessageBox, QCheckBox,
                             QGroupBox, QRadioButton, QInputDialog, QListWidgetItem, QSizePolicy,
                             QGraphicsView, QGraphicsScene)
-from PyQt5.QtGui import QPixmap, QIcon, QImage, QTransform, QPainter
+from PyQt5.QtGui import QPixmap, QIcon, QImage, QTransform, QPainter, QImageReader
 from PyQt5.QtCore import QPointF
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from sentence_transformers import SentenceTransformer, util
@@ -1314,31 +1314,23 @@ class PhotoSorterApp(QMainWindow):
 
 
     def search_by_tag(self):
-        """Recherche des images par tag dans le dossier sélectionné"""
-        folder = self.folder_path_input.text().strip()
-        if not folder or not os.path.isdir(folder):
-            QMessageBox.warning(self, "Erreur", "Aucun dossier valide sélectionné !")
-            return
-
+        """Recherche des images par tag (autonome, sans dépendre du dossier)"""
         tag = self.tag_search.text().strip()
         if not tag:
-            self.scan_folder_for_tags(folder)  # Affiche toutes les images si aucun tag
+            QMessageBox.warning(self, "Erreur", "Aucun tag saisi !")
             return
 
-        self.log_message(f"\ud83d\udd0d Recherche du tag '{tag}' dans {folder}...")
-        results = self.tag_manager.get_images_by_tag(tag)
-        results = [r for r in results if r.startswith(folder)]  # Filtrer par dossier
-        self.search_results.clear()
+        all_results = self.tag_manager.get_images_by_tag(tag)
+        if not all_results:
+            self.search_results.clear()
+            self.search_results.addItem("❌ Aucun résultat trouvé.")
+            return
 
-        if results:
-            for img_path in results:
-                tags = self.tag_manager.get_tags(img_path)
-                tag_str = f" [Tags: {', '.join(tags)}]" if tags else "[Aucun tag]"
-                self.search_results.addItem(f"{os.path.basename(img_path)}{tag_str} ({img_path})")
-            self.log_message(f"\u2705 {len(results)} résultat(s) trouvé(s).")
-        else:
-            self.search_results.addItem("\u274c Aucun résultat trouvé.")
-            self.log_message("\u274c Aucun résultat trouvé.")
+        self.search_results.clear()
+        for img_path in all_results:
+            tags = self.tag_manager.get_tags(img_path)
+            tag_str = f" [Tags: {', '.join(tags)}]" if tags else "[Aucun tag]"
+            self.search_results.addItem(f"{os.path.basename(img_path)}{tag_str} ({img_path})")
 
     def load_image_from_results(self, item):
         """Charge une image depuis les résultats de recherche"""
