@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ====================== CONFIGURATION ======================
 class Config:
     # Utiliser des chemins relatifs ou basés sur le répertoire personnel
-    BASE_DIR = Path("C:/Users/ln/workspace/lienardnicolas12-coder__-phototrier")
+    BASE_DIR = Path.home() / "Documents" / "photos" / "tri_photo_RAW"
     DOSSIER_A_TRIER = BASE_DIR / "a_trier"
     DOSSIER_TRIES = BASE_DIR / "tries"
     MODEL_SAVE_PATH = BASE_DIR / "models"
@@ -1003,7 +1003,7 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
 
     def load_image_preview(self, image_path):
-        """Charge l'aperçu d'une image dans image_label avec zoom"""
+        """Charge l'aperçu d'une image dans image_label avec zoom intelligent (conserve le ratio d'aspect)"""
         try:
             if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
                 image = self.raw_to_pil(image_path)
@@ -1011,23 +1011,25 @@ class PhotoSorterApp(QMainWindow):
                 image = Image.open(image_path)
             
             if image:
-                # Redimensionner à 800x600px max AVANT d'appliquer le zoom
-                max_width, max_height = 800, 600
-                if image.width > max_width or image.height > max_height:
-                    # Calculer le ratio pour maintenir les proportions
-                    width_ratio = max_width / image.width
-                    height_ratio = max_height / image.height
-                    scale_ratio = min(width_ratio, height_ratio)
-                    image = image.resize((
-                        max(1, int(image.width * scale_ratio)),
-                        max(1, int(image.height * scale_ratio))
-                    ), Image.LANCZOS)
+                # Taille du conteneur (800x600)
+                container_width, container_height = 800, 600
                 
-                # Appliquer le zoom (déjà limité entre min_zoom et max_zoom)
-                self.zoom_factor = max(self.min_zoom, min(self.zoom_factor, self.max_zoom))
-                new_width = max(1, int(image.width * self.zoom_factor))
-                new_height = max(1, int(image.height * self.zoom_factor))
+                # Calculer le facteur de redimensionnement initial pour adapter l'image au conteneur
+                # en conservant le ratio d'aspect (comme object-fit: contain)
+                width_ratio = container_width / image.width
+                height_ratio = container_height / image.height
+                initial_scale = min(width_ratio, height_ratio)
+                
+                # Appliquer le redimensionnement initial
+                new_width = max(1, int(image.width * initial_scale))
+                new_height = max(1, int(image.height * initial_scale))
                 image = image.resize((new_width, new_height), Image.LANCZOS)
+                
+                # Appliquer le zoom (proportionnel)
+                self.zoom_factor = max(self.min_zoom, min(self.zoom_factor, self.max_zoom))
+                zoomed_width = max(1, int(new_width * self.zoom_factor))
+                zoomed_height = max(1, int(new_height * self.zoom_factor))
+                image = image.resize((zoomed_width, zoomed_height), Image.LANCZOS)
                 
                 pixmap = self.pil2pixmap(image)
                 self.image_label.setPixmap(pixmap)
