@@ -1098,39 +1098,37 @@ class PhotoSorterApp(QMainWindow):
 
 
     def load_image_preview(self, image_path):
-        """Charge l'aperçu d'une image dans image_label avec zoom intelligent (conserve le ratio d'aspect)"""
+        """Charge une vignette de l'image (max 1000px de large) avec QImageReader"""
         try:
-            if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
-                image = self.raw_to_pil(image_path)
-            else:
-                image = Image.open(image_path)
-            
-            if image:
-                # Taille du conteneur (800x600)
-                container_width, container_height = 800, 600
-                
-                # Calculer le facteur de redimensionnement initial pour adapter l'image au conteneur
-                # en conservant le ratio d'aspect (comme object-fit: contain)
-                width_ratio = container_width / image.width
-                height_ratio = container_height / image.height
-                initial_scale = min(width_ratio, height_ratio)
-                
-                # Appliquer le redimensionnement initial
-                new_width = max(1, int(image.width * initial_scale))
-                new_height = max(1, int(image.height * initial_scale))
-                image = image.resize((new_width, new_height), Image.LANCZOS)
-                
-                # Appliquer le zoom (proportionnel)
-                self.zoom_factor = max(self.min_zoom, min(self.zoom_factor, self.max_zoom))
-                zoomed_width = max(1, int(new_width * self.zoom_factor))
-                zoomed_height = max(1, int(new_height * self.zoom_factor))
-                image = image.resize((zoomed_width, zoomed_height), Image.LANCZOS)
-                
-                pixmap = self.pil2pixmap(image)
-                self.set_image_pixmap(pixmap)
-                self.current_image_path = image_path
+            # Libérer l'ancienne image
+            if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
+                self.graphics_scene.removeItem(self.graphics_pixmap_item)
+                self.graphics_pixmap_item = None
+            self.graphics_scene.clear()
+
+            # Charger avec QImageReader (gère RAW, JPEG, PNG)
+            reader = QImageReader(image_path)
+            reader.setAutoTransform(True)  # Orientation EXIF
+
+            # Limiter à 1000px de large
+            original_size = QImageReader(image_path).size()
+            max_width = 1000
+            scale_factor = max_width / original_size.width() if original_size.width() > max_width else 1.0
+            reader.setScaledSize(QSize(
+                int(original_size.width() * scale_factor),
+                int(original_size.height() * scale_factor)
+            ))
+
+            qimage = reader.read()
+            if qimage.isNull():
+                raise ValueError(f"Format non supporté ou image corrompue : {image_path}")
+
+            pixmap = QPixmap.fromImage(qimage)
+            self.set_image_pixmap(pixmap)
+            self.current_image_path = image_path
+
         except Exception as e:
-            self.log_message(f"⚠️ Erreur de chargement de l'image: {e}")
+            self.log_message(f"⚠️ Erreur : {e}")
             self.clear_image()
 
 
