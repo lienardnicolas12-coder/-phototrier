@@ -502,10 +502,10 @@ class PhotoSorterApp(QMainWindow):
         layout.addWidget(model_frame)
 
         # Bouton pour télécharger un modèle par défaut
-        download_btn = QPushButton("\u2753 Comment obtenir un modèle ?")
+        self.download_btn = QPushButton("\u2753 Comment obtenir un modèle ?")
 # self.download_btn.clicked.connect(self.download_default_model)  # Désactivé : méthode non implémentée
         self.download_btn.setEnabled(False)  # Désactive le bouton pour éviter l'erreur
-        layout.addWidget(download_btn)
+        layout.addWidget(self.download_btn)
 
         # Bouton charger
         load_model_btn = QPushButton("\ud83d\udcc1 Charger le modèle TensorFlow")
