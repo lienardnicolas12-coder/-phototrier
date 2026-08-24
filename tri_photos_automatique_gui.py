@@ -1158,6 +1158,160 @@ class PhotoSorterApp(QMainWindow):
         self.log_message(f"\ud83d\udcf7 Nouvelle photo détectée : {file_path}")
         self.classer_et_deplacer(file_path)
 
+
+    # ====================== TRI ET CLASSIFICATION ======================
+    def raw_to_pil(self, raw_path):
+        """Convertit un fichier RAW en image PIL"""
+        try:
+            with rawpy.imread(raw_path) as raw:
+                rgb_array = raw.postprocess(
+                    use_camera_wb=True,
+                    output_color=rawpy.ColorSpace.sRGB,
+                    no_auto_bright=True,
+                    gamma=(1, 1)
+                )
+                return Image.fromarray(rgb_array.astype('uint8'))
+        except Exception as e:
+            self.log_message(f"\u26a0\ufe0f Erreur avec {raw_path}: {e}")
+            return None
+
+    def classer_image_clip(self, chemin_image):
+        """Classifie une image avec CLIP"""
+        try:
+            if chemin_image.lower().endswith(tuple(self.config.RAW_EXTENSIONS)):
+                image = self.raw_to_pil(chemin_image)
+                if image is None:
+                    return "autre"
+            else:
+                try:
+                    image = Image.open(chemin_image)
+                except Exception as e:
+                    self.log_message(f"\u26a0\ufe0f Erreur d'ouverture de {chemin_image}: {e}")
+                    return "autre"
+
+            # Redimensionner pour optimiser le traitement
+            if max(image.size) > 768:
+                image = image.resize((768, 768))
+
+            image_embedding = self.model_clip.encode(image, convert_to_tensor=True)
+            similarities = util.cos_sim(image_embedding, self.text_embeddings)[0]
+            categorie = list(self.config.CATEGORIES.keys())[similarities.argmax().item()]
+
+            # Seuil de confiance
+            max_similarity = similarities.max().item()
+            if max_similarity < 0.2:
+                return "autre"
+
+            return categorie
+        except Exception as e:
+            self.log_message(f"\u26a0\ufe0f Erreur de classification CLIP pour {chemin_image}: {e}")
+            return "autre"
+
+    def classer_image_tf(self, chemin_image):
+        """Classifie une image avec TensorFlow"""
+        try:
+            if chemin_image.lower().endswith(tuple(self.config.RAW_EXTENSIONS)):
+                image = self.raw_to_pil(chemin_image)
+                if image is None:
+                    return "autre"
+            else:
+                try:
+                    image = Image.open(chemin_image)
+                except Exception as e:
+                    return "autre"
+
+            if max(image.size) > 224:
+                image = image.resize((224, 224))
+            img_array = np.array(image) / 255.0
+            if img_array.shape[-1] == 4:
+                img_array = img_array[:, :, :3]
+            img_array = np.expand_dims(img_array, axis=0)
+            predictions = self.model_tf.predict(img_array, verbose=0)
+            categorie = list(self.config.CATEGORIES.keys())[np.argmax(predictions[0])]
+            return categorie
+        except Exception as e:
+            self.log_message(f"\u26a0\ufe0f Erreur de classification TF pour {chemin_image}: {e}")
+            return "autre"
+
+    def deplacer_image_et_metadonnees(self, chemin_source, categorie):
+        """Déplace une image et ses métadonnées"""
+        try:
+            chemin_source = os.path.normpath(chemin_source)
+            dossier_dest = os.path.join(self.config.DOSSIER_TRIES, categorie)
+            os.makedirs(dossier_dest, exist_ok=True)
+
+            nom_fichier = os.path.basename(chemin_source)
+            chemin_dest = os.path.join(dossier_dest, nom_fichier)
+
+            if os.path.exists(chemin_dest):
+                stem = os.path.splitext(nom_fichier)[0]
+                suffix = os.path.splitext(nom_fichier)[1]
+                counter = 1
+                while True:
+                    new_name = f"{stem}_{counter}{suffix}"
+                    chemin_dest = os.path.join(dossier_dest, new_name)
+                    if not os.path.exists(chemin_dest):
+                        break
+                    counter += 1
+
+            shutil.move(chemin_source, chemin_dest)
+
+            base_name = os.path.splitext(os.path.basename(chemin_source))[0]
+            dossier_source = os.path.dirname(chemin_source)
+            
+            for ext in self.config.METADATA_EXTENSIONS:
+                meta_file = os.path.join(dossier_source, f"{base_name}{ext}")
+                if os.path.exists(meta_file):
+                    try:
+                        shutil.move(meta_file, os.path.join(dossier_dest, os.path.basename(meta_file)))
+                    except Exception as e:
+                        self.log_message(f"\u26a0\ufe0f Impossible de déplacer {meta_file}: {e}")
+
+            self.log_message(f"\u2705 Déplacé : {nom_fichier} \u2192 {categorie}")
+        except Exception as e:
+            self.log_message(f"\u26a0\ufe0f Impossible de déplacer {chemin_source}: {e}")
+
+    def classer_et_deplacer(self, chemin_image):
+        """Classifie et déplace une image"""
+        try:
+            use_tf = self.radio_tf.isChecked() and self.model_tf is not None
+            if use_tf:
+                categorie = self.classer_image_tf(chemin_image)
+            else:
+                categorie = self.classer_image_clip(chemin_image)
+            self.deplacer_image_et_metadonnees(chemin_image, categorie)
+        except Exception as e:
+            self.log_message(f"\u26a0\ufe0f Erreur avec {chemin_image}: {e}")
+
+    def trier_dossier_maintenant(self):
+        """Trie le dossier sélectionné maintenant"""
+        self.log_message("\ud83d\udcc1 Tri du dossier en cours...")
+        self.trier_dossier(str(self.config.DOSSIER_A_TRIER))
+
+    def trier_dossier(self, dossier):
+        """Trie toutes les images dans un dossier"""
+        try:
+            files = []
+            for root, _, filenames in os.walk(dossier):
+                for filename in filenames:
+                    filepath = Path(root) / filename
+                    if filepath.suffix.lower() not in ['.thm', '.xmp', '.json']:
+                        files.append(filepath)
+
+            raw_files = [f for f in files if f.suffix.lower() in self.config.RAW_EXTENSIONS]
+            other_files = [f for f in files if f not in raw_files]
+            all_files = raw_files + other_files
+
+            self.log_message(f"\ud83d\udcc1 Trouvé {len(all_files)} fichier(s) à trier")
+            
+            for filepath in all_files:
+                self.log_message(f"\ud83d\udcf7 Tri de : {filepath}")
+                self.classer_et_deplacer(str(filepath))
+                
+        except Exception as e:
+            self.log_message(f"\u274c Erreur lors du tri : {e}")
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = PhotoSorterApp()
