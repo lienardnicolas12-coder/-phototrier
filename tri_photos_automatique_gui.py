@@ -394,7 +394,7 @@ class PhotoSorterApp(QMainWindow):
         folder_search_group = QGroupBox("Rechercher dans un dossier")
         folder_search_layout = QHBoxLayout()
         self.folder_path_input = QLineEdit()
-        self.folder_path_input.setPlaceholderText("Dossier à scanner...")
+        self.folder_path_input.setPlaceholderText("Dossier \u00e0 scanner...")
         folder_search_layout.addWidget(self.folder_path_input)
         browse_folder_btn = QPushButton("\ud83d\udcc1 Parcourir dossier")
         browse_folder_btn.clicked.connect(self.browse_folder_for_tags)
@@ -402,21 +402,31 @@ class PhotoSorterApp(QMainWindow):
         folder_search_group.setLayout(folder_search_layout)
         layout.addWidget(folder_search_group)
 
-        # Champ masqué pour la compatibilité (anciennement "Recherche par image")
+        # Champ masqué pour la compatibilité
         self.entry_image_path = QLineEdit()
-        self.entry_image_path.setVisible(False)  # Masqué mais présent pour la compatibilité
+        self.entry_image_path.setVisible(False)
 
-        # Aperçu de l'image
-        # Remplacement par QGraphicsView pour un zoom fluide
-        self.graphics_view = QGraphicsView()
-        self.graphics_view.setMinimumHeight(300)
-        self.graphics_view.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
+        # Conteneur FIXE pour l'image (800x600)
+        image_container = QFrame()
+        image_container.setFixedSize(800, 600)
+        image_container.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
+        layout.addWidget(image_container)
+
+        # Configuration du QGraphicsView avec taille FIXE
+        self.graphics_view = QGraphicsView(image_container)
+        self.graphics_view.setFixedSize(800, 600)
+        self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
         self.graphics_scene = QGraphicsScene(self.graphics_view)
         self.graphics_view.setScene(self.graphics_scene)
-        self.graphics_view.setAlignment(Qt.AlignCenter)
         self.graphics_view.setRenderHint(QPainter.Antialiasing)
+        self.graphics_view.setRenderHint(QPainter.SmoothPixmapTransform)
+        
         self.graphics_pixmap_item = None
-        layout.addWidget(self.graphics_view)
+        self.zoom_factor = 1.0
+        self.min_zoom = 0.1
+        self.max_zoom = 3.0
 
         # Boutons de zoom
         zoom_frame = QFrame()
@@ -447,7 +457,7 @@ class PhotoSorterApp(QMainWindow):
         layout.addWidget(self.current_tags_label)
 
         # Ajouter un tag
-        tag_group = QGroupBox("Ajouter un tag à cette image")
+        tag_group = QGroupBox("Ajouter un tag \u00e0 cette image")
         tag_layout = QHBoxLayout()
         self.new_tag_input = QLineEdit()
         self.new_tag_input.setPlaceholderText("Ex: cheval, paysage...")
@@ -475,7 +485,6 @@ class PhotoSorterApp(QMainWindow):
         self.search_results = QListWidget()
         self.search_results.itemDoubleClicked.connect(self.load_image_from_results)
         layout.addWidget(self.search_results)
-
     def setup_tf_tab(self):
         self.tf_tab = QWidget()
         self.tabs.addTab(self.tf_tab, "\ud83e\udd16 Modèle TensorFlow")
@@ -1008,6 +1017,84 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"Tags pour {os.path.basename(image_path)}: {tags}")
         except Exception as e:
             self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
+    def set_image_pixmap(self, pixmap):
+        """Affiche une pixmap dans le QGraphicsView"""
+        self.graphics_scene.clear()
+        if self.graphics_pixmap_item:
+            self.graphics_scene.removeItem(self.graphics_pixmap_item)
+        
+        self.graphics_pixmap_item = self.graphics_scene.addPixmap(pixmap)
+        self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
+        self.zoom_factor = 1.0
+        self.fit_in_view()
+
+    def clear_image(self):
+        """Efface l'image affichée"""
+        self.graphics_scene.clear()
+        self.graphics_pixmap_item = None
+
+    def fit_in_view(self):
+        """Adapte l'image à la taille du QGraphicsView en conservant le ratio d'aspect"""
+        if not self.graphics_pixmap_item:
+            return
+        
+        # Désactiver temporairement les mises à jour pour éviter les artefacts
+        self.graphics_view.setUpdatesEnabled(False)
+        
+        # Obtenir la taille du viewport (800x600)
+        viewport_width = self.graphics_view.viewport().width()
+        viewport_height = self.graphics_view.viewport().height()
+        
+        if viewport_width <= 0 or viewport_height <= 0:
+            self.graphics_view.setUpdatesEnabled(True)
+            return
+        
+        # Obtenir la taille de l'image
+        pixmap = self.graphics_pixmap_item.pixmap()
+        if pixmap.isNull():
+            self.graphics_view.setUpdatesEnabled(True)
+            return
+        
+        image_width = pixmap.width()
+        image_height = pixmap.height()
+        
+        if image_width <= 0 or image_height <= 0:
+            self.graphics_view.setUpdatesEnabled(True)
+            return
+        
+        # Calculer le facteur d'échelle pour adapter l'image au viewport
+        # en conservant le ratio d'aspect (comme object-fit: contain)
+        width_ratio = viewport_width / image_width
+        height_ratio = viewport_height / image_height
+        scale_factor = min(width_ratio, height_ratio) * self.zoom_factor
+        
+        # Réinitialiser la transformation
+        self.graphics_pixmap_item.setTransform(QTransform())
+        
+        # Appliquer le scale
+        self.graphics_pixmap_item.setScale(scale_factor)
+        
+        # Centrer l'image
+        self.graphics_view.centerOn(self.graphics_pixmap_item)
+        
+        # Réactiver les mises à jour
+        self.graphics_view.setUpdatesEnabled(True)
+
+    def zoom_in(self):
+        """Augmente le zoom de 20%"""
+        self.zoom_factor = min(self.zoom_factor * 1.2, self.max_zoom)
+        self.fit_in_view()
+
+    def zoom_out(self):
+        """Diminue le zoom de 20%"""
+        self.zoom_factor = max(self.zoom_factor / 1.2, self.min_zoom)
+        self.fit_in_view()
+
+    def zoom_reset(self):
+        """Réinitialise le zoom à 100%"""
+        self.zoom_factor = 1.0
+        self.fit_in_view()
+
 
     def set_image_pixmap(self, pixmap):
         """Affiche une pixmap dans le QGraphicsView avec zoom réinitialisé"""
