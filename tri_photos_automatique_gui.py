@@ -1132,6 +1132,32 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"⚠️ Erreur de chargement de l'image: {e}")
             self.clear_image()
 
+
+    # ====================== WATCHDOG ======================
+    def toggle_watchdog(self, state):
+        if state == Qt.Checked:
+            self.start_watchdog()
+        else:
+            self.stop_watchdog()
+
+    def start_watchdog(self):
+        if self.watchdog_worker is None or not self.watchdog_worker.isRunning():
+            self.stop_watchdog()
+            self.watchdog_worker = WatchdogWorker(str(self.config.DOSSIER_A_TRIER))
+            self.watchdog_worker.file_detected.connect(self.on_file_detected)
+            self.watchdog_worker.start()
+            self.log_message(f"\ud83d\udc41\ufe0f Surveillance active sur : {self.config.DOSSIER_A_TRIER}")
+
+    def stop_watchdog(self):
+        if self.watchdog_worker:
+            self.watchdog_worker.stop()
+            self.watchdog_worker = None
+            self.log_message("\ud83d\uded1 Surveillance arrêtée.")
+
+    def on_file_detected(self, file_path):
+        self.log_message(f"\ud83d\udcf7 Nouvelle photo détectée : {file_path}")
+        self.classer_et_deplacer(file_path)
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = PhotoSorterApp()
