@@ -1333,7 +1333,7 @@ class PhotoSorterApp(QMainWindow):
         if results:
             for img_path in results:
                 tags = self.tag_manager.get_tags(img_path)
-                tag_str = f" [Tags: {'\u002c '.join(tags)}]"
+                tag_str = f" [Tags: {', '.join(tags)}]" if tags else "[Aucun tag]"
                 self.search_results.addItem(f"{os.path.basename(img_path)}{tag_str} ({img_path})")
             self.log_message(f"\u2705 {len(results)} résultat(s) trouvé(s).")
         else:
