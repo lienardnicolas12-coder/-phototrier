@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                             QTabWidget, QFrame, QFileDialog, QMessageBox, QCheckBox,
                             QGroupBox, QRadioButton, QInputDialog, QListWidgetItem, QSizePolicy,
                             QGraphicsView, QGraphicsScene)
-from PyQt5.QtGui import QPixmap, QIcon, QImage, QTransform
+from PyQt5.QtGui import QPixmap, QIcon, QImage, QTransform, QPainter
 from PyQt5.QtCore import QPointF
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from sentence_transformers import SentenceTransformer, util
