@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ====================== CONFIGURATION ======================
 class Config:
     # Utiliser des chemins relatifs ou basés sur le répertoire personnel
-    BASE_DIR = Path.home() / "Documents" / "photos" / "tri_photo_RAW"
+    BASE_DIR = Path(__file__).parent
     DOSSIER_A_TRIER = BASE_DIR / "a_trier"
     DOSSIER_TRIES = BASE_DIR / "tries"
     MODEL_SAVE_PATH = BASE_DIR / "models"
@@ -503,7 +503,8 @@ class PhotoSorterApp(QMainWindow):
 
         # Bouton pour télécharger un modèle par défaut
         download_btn = QPushButton("\u2753 Comment obtenir un modèle ?")
-        download_btn.clicked.connect(self.download_default_model)
+# self.download_btn.clicked.connect(self.download_default_model)  # Désactivé : méthode non implémentée
+        self.download_btn.setEnabled(False)  # Désactive le bouton pour éviter l'erreur
         layout.addWidget(download_btn)
 
         # Bouton charger
