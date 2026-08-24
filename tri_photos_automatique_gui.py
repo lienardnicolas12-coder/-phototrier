@@ -10,9 +10,11 @@ from PIL import Image
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                             QLabel, QLineEdit, QPushButton, QListWidget, QTextEdit,
                             QTabWidget, QFrame, QFileDialog, QMessageBox, QCheckBox,
-                            QGroupBox, QRadioButton, QInputDialog, QListWidgetItem, QSizePolicy)
-from PyQt5.QtGui import QPixmap, QIcon, QImage
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+                            QGroupBox, QRadioButton, QInputDialog, QListWidgetItem, QSizePolicy,
+                            QGraphicsView, QGraphicsScene)
+from PyQt5.QtGui import QPixmap, QIcon, QImage, QTransform
+from PyQt5.QtCore import QPointF
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from sentence_transformers import SentenceTransformer, util
 import torch
 import tensorflow as tf
@@ -228,7 +230,7 @@ class PhotoSorterApp(QMainWindow):
         self.new_tag_input = None
         self.tag_search = None
         self.search_results = None
-        self.image_label = None
+        self.graphics_view = None
         self.current_tags_label = None
         self.tf_model_path = None
         self.tf_status = None
@@ -405,11 +407,16 @@ class PhotoSorterApp(QMainWindow):
         self.entry_image_path.setVisible(False)  # Masqué mais présent pour la compatibilité
 
         # Aperçu de l'image
-        self.image_label = QLabel()
-        self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setMinimumHeight(300)
-        self.image_label.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
-        layout.addWidget(self.image_label)
+        # Remplacement par QGraphicsView pour un zoom fluide
+        self.graphics_view = QGraphicsView()
+        self.graphics_view.setMinimumHeight(300)
+        self.graphics_view.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
+        self.graphics_scene = QGraphicsScene(self.graphics_view)
+        self.graphics_view.setScene(self.graphics_scene)
+        self.graphics_view.setAlignment(Qt.AlignCenter)
+        self.graphics_view.setRenderHint(QPainter.Antialiasing)
+        self.graphics_pixmap_item = None
+        layout.addWidget(self.graphics_view)
 
         # Boutons de zoom
         zoom_frame = QFrame()
@@ -1002,6 +1009,70 @@ class PhotoSorterApp(QMainWindow):
         except Exception as e:
             self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
 
+    def set_image_pixmap(self, pixmap):
+        """Affiche une pixmap dans le QGraphicsView avec zoom réinitialisé"""
+        self.graphics_scene.clear()
+        if self.graphics_pixmap_item:
+            self.graphics_scene.removeItem(self.graphics_pixmap_item)
+        
+        self.graphics_pixmap_item = self.graphics_scene.addPixmap(pixmap)
+        self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
+        self.zoom_factor = 1.0  # Réinitialiser le zoom
+        self.fit_to_viewport()
+
+    def clear_image(self):
+        """Efface l'image affichée"""
+        self.graphics_scene.clear()
+        self.graphics_pixmap_item = None
+
+    def fit_to_viewport(self):
+        """Adapte l'image à la taille du viewport en conservant le ratio d'aspect"""
+        if not self.graphics_pixmap_item or not self.graphics_view.viewport():
+            return
+        
+        # Obtenir la taille du viewport
+        viewport_size = self.graphics_view.viewport().size()
+        if viewport_size.width() <= 0 or viewport_size.height() <= 0:
+            return
+        
+        # Obtenir la taille de l'image
+        pixmap = self.graphics_pixmap_item.pixmap()
+        if pixmap.isNull():
+            return
+        
+        image_width = pixmap.width()
+        image_height = pixmap.height()
+        
+        if image_width <= 0 or image_height <= 0:
+            return
+        
+        # Calculer le facteur d'échelle pour adapter l'image au viewport (comme object-fit: contain)
+        width_ratio = viewport_size.width() / image_width
+        height_ratio = viewport_size.height() / image_height
+        scale_factor = min(width_ratio, height_ratio) * self.zoom_factor
+        
+        # Appliquer le scale au pixmap item
+        self.graphics_pixmap_item.setScale(scale_factor)
+        
+        # Centrer l'image
+        self.graphics_view.centerOn(self.graphics_pixmap_item)
+
+    def zoom_in(self):
+        """Augmente le zoom de 20%"""
+        self.zoom_factor = min(self.zoom_factor * 1.2, self.max_zoom)
+        self.fit_to_viewport()
+
+    def zoom_out(self):
+        """Diminue le zoom de 20%"""
+        self.zoom_factor = max(self.zoom_factor / 1.2, self.min_zoom)
+        self.fit_to_viewport()
+
+    def zoom_reset(self):
+        """Réinitialise le zoom à 100%"""
+        self.zoom_factor = 1.0
+        self.fit_to_viewport()
+
+
     def load_image_preview(self, image_path):
         """Charge l'aperçu d'une image dans image_label avec zoom intelligent (conserve le ratio d'aspect)"""
         try:
@@ -1032,12 +1103,11 @@ class PhotoSorterApp(QMainWindow):
                 image = image.resize((zoomed_width, zoomed_height), Image.LANCZOS)
                 
                 pixmap = self.pil2pixmap(image)
-                self.image_label.setPixmap(pixmap)
-                self.image_label.setAlignment(Qt.AlignCenter)
+                self.set_image_pixmap(pixmap)
                 self.current_image_path = image_path
         except Exception as e:
             self.log_message(f"⚠️ Erreur de chargement de l'image: {e}")
-            self.image_label.clear()
+            self.clear_image()
 
     def zoom_in(self):
         """Augmente le zoom de 20%"""
