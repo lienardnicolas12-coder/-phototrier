@@ -10,7 +10,7 @@ from PIL import Image
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                             QLabel, QLineEdit, QPushButton, QListWidget, QTextEdit,
                             QTabWidget, QFrame, QFileDialog, QMessageBox, QCheckBox,
-                            QGroupBox, QRadioButton, QInputDialog, QListWidgetItem)
+                            QGroupBox, QRadioButton, QInputDialog, QListWidgetItem, QSizePolicy)
 from PyQt5.QtGui import QPixmap, QIcon, QImage
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from sentence_transformers import SentenceTransformer, util
@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ====================== CONFIGURATION ======================
 class Config:
     # Utiliser des chemins relatifs ou basés sur le répertoire personnel
-    BASE_DIR = Path.home() / "Documents" / "photos" / "tri_photo_RAW"
+    BASE_DIR = Path("C:/Users/ln/workspace/lienardnicolas12-coder__-phototrier")
     DOSSIER_A_TRIER = BASE_DIR / "a_trier"
     DOSSIER_TRIES = BASE_DIR / "tries"
     MODEL_SAVE_PATH = BASE_DIR / "models"
@@ -123,9 +123,20 @@ class TagManager:
         if self.tags_file.exists():
             try:
                 with open(self.tags_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    loaded_tags = json.load(f)
+                    # Convertir les listes en sets pour une gestion optimale
+                    return {path: set(tags) for path, tags in loaded_tags.items()}
+            except json.JSONDecodeError as e:
+                logging.error(f"❌ Erreur de syntaxe JSON dans tags.json: {e}. Le fichier sera réinitialisé.")
+                # Réinitialiser le fichier avec un JSON vide
+                try:
+                    with open(self.tags_file, 'w', encoding='utf-8') as f:
+                        json.dump({}, f)
+                except Exception as e2:
+                    logging.error(f"❌ Impossible de réinitialiser tags.json: {e2}")
+                return {}
             except Exception as e:
-                logging.error(f"Erreur de chargement des tags: {e}")
+                logging.error(f"❌ Erreur de chargement des tags: {e}")
                 return {}
         return {}
 
@@ -203,12 +214,17 @@ class PhotoSorterApp(QMainWindow):
         self.watchdog_worker = None
         self.text_embeddings = None
 
+        # Attributs pour le zoom
+        self.zoom_factor = 1.0
+        self.min_zoom = 0.1
+        self.max_zoom = 2.0
+        self.current_image_path = None
+
         # Attributs de l'interface
         self.entry_source = None
         self.entry_output = None
         self.log_text = None
         self.check_watch = None
-        self.entry_image_path = None
         self.new_tag_input = None
         self.tag_search = None
         self.search_results = None
@@ -384,16 +400,9 @@ class PhotoSorterApp(QMainWindow):
         folder_search_group.setLayout(folder_search_layout)
         layout.addWidget(folder_search_group)
 
-        # Sélection de l'image
-        select_frame = QFrame()
-        select_layout = QHBoxLayout(select_frame)
+        # Champ masqué pour la compatibilité (anciennement "Recherche par image")
         self.entry_image_path = QLineEdit()
-        self.entry_image_path.setMinimumWidth(400)
-        browse_img_btn = QPushButton("Parcourir image")
-        browse_img_btn.clicked.connect(self.browse_image)
-        select_layout.addWidget(self.entry_image_path)
-        select_layout.addWidget(browse_img_btn)
-        layout.addWidget(select_frame)
+        self.entry_image_path.setVisible(False)  # Masqué mais présent pour la compatibilité
 
         # Aperçu de l'image
         self.image_label = QLabel()
@@ -401,6 +410,29 @@ class PhotoSorterApp(QMainWindow):
         self.image_label.setMinimumHeight(300)
         self.image_label.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
         layout.addWidget(self.image_label)
+
+        # Boutons de zoom
+        zoom_frame = QFrame()
+        zoom_layout = QHBoxLayout(zoom_frame)
+        zoom_layout.addStretch()
+
+        zoom_in_btn = QPushButton("+ Zoom")
+        zoom_in_btn.setStyleSheet("font-size: 12px;")
+        zoom_in_btn.clicked.connect(self.zoom_in)
+        zoom_layout.addWidget(zoom_in_btn)
+
+        zoom_out_btn = QPushButton("- Zoom")
+        zoom_out_btn.setStyleSheet("font-size: 12px;")
+        zoom_out_btn.clicked.connect(self.zoom_out)
+        zoom_layout.addWidget(zoom_out_btn)
+
+        zoom_reset_btn = QPushButton("Reset Zoom")
+        zoom_reset_btn.setStyleSheet("font-size: 12px;")
+        zoom_reset_btn.clicked.connect(self.zoom_reset)
+        zoom_layout.addWidget(zoom_reset_btn)
+
+        zoom_layout.addStretch()
+        layout.addWidget(zoom_frame)
 
         # Tags actuels
         self.current_tags_label = QLabel("Tags actuels : Aucun")
@@ -434,7 +466,7 @@ class PhotoSorterApp(QMainWindow):
 
         # Résultats de recherche
         self.search_results = QListWidget()
-        self.search_results.itemDoubleClicked.connect(self.load_image_from_search)
+        self.search_results.itemDoubleClicked.connect(self.load_image_from_results)
         layout.addWidget(self.search_results)
 
     def setup_tf_tab(self):
@@ -889,15 +921,6 @@ class PhotoSorterApp(QMainWindow):
         if file_or_dir:
             self.tf_model_path.setText(file_or_dir)
 
-    def browse_image(self):
-        file, _ = QFileDialog.getOpenFileName(
-            self, "Sélectionner une image", str(self.config.DOSSIER_TRIES),
-            "Images (*.jpg *.jpeg *.png *.raw *.cr2 *.nef *.arw *.dng);;Tous les fichiers (*)"
-        )
-        if file:
-            self.entry_image_path.setText(file)
-            self.load_image_preview(file)
-            self.load_image_tags(file)
 
     def browse_folder_for_tags(self):
         """Parcourir un dossier pour chercher des images taguées"""
@@ -943,13 +966,19 @@ class PhotoSorterApp(QMainWindow):
         except Exception as e:
             self.log_message(f"\u274c Erreur lors du scan du dossier: {e}")
 
-    # ====================== GESTION DES TAGS ======================
     def add_tag_to_image(self):
-        """Ajoute un tag à l'image actuellement sélectionnée"""
-        image_path = self.entry_image_path.text() if self.entry_image_path else ""
-        if not image_path or not os.path.exists(image_path):
-            QMessageBox.warning(self, "Erreur", "Aucune image valide sélectionnée !")
+        """Ajoute un tag à l'image actuellement sélectionnée dans les résultats"""
+        selected_items = self.search_results.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "Erreur", "Aucune image sélectionnée dans les résultats !")
             return
+
+        item = selected_items[0]
+        text = item.text()
+        if " (" in text and ")" in text:
+            image_path = text.split(" (")[1][:-1]  # Extraire le chemin entre parenthèses
+        else:
+            image_path = text
 
         new_tag = self.new_tag_input.text().strip()
         if not new_tag:
@@ -958,6 +987,9 @@ class PhotoSorterApp(QMainWindow):
 
         self.tag_manager.add_tag(image_path, new_tag)
         self.new_tag_input.clear()
+        self.log_message(f"✅ Tag '{new_tag}' ajouté à {os.path.basename(image_path)}")
+        self.load_image_tags(image_path)
+
         self.log_message(f"\u2705 Tag '{new_tag}' ajouté à {os.path.basename(image_path)}")
         self.load_image_tags(image_path)
 
@@ -969,6 +1001,69 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"Tags pour {os.path.basename(image_path)}: {tags}")
         except Exception as e:
             self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
+
+    def load_image_preview(self, image_path):
+        """Charge l'aperçu d'une image dans image_label avec zoom"""
+        try:
+            if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
+                image = self.raw_to_pil(image_path)
+            else:
+                image = Image.open(image_path)
+            
+            if image:
+                # Redimensionner à 800x600px max AVANT d'appliquer le zoom
+                max_width, max_height = 800, 600
+                if image.width > max_width or image.height > max_height:
+                    # Calculer le ratio pour maintenir les proportions
+                    width_ratio = max_width / image.width
+                    height_ratio = max_height / image.height
+                    scale_ratio = min(width_ratio, height_ratio)
+                    image = image.resize((
+                        max(1, int(image.width * scale_ratio)),
+                        max(1, int(image.height * scale_ratio))
+                    ), Image.LANCZOS)
+                
+                # Appliquer le zoom (déjà limité entre min_zoom et max_zoom)
+                self.zoom_factor = max(self.min_zoom, min(self.zoom_factor, self.max_zoom))
+                new_width = max(1, int(image.width * self.zoom_factor))
+                new_height = max(1, int(image.height * self.zoom_factor))
+                image = image.resize((new_width, new_height), Image.LANCZOS)
+                
+                pixmap = self.pil2pixmap(image)
+                self.image_label.setPixmap(pixmap)
+                self.image_label.setAlignment(Qt.AlignCenter)
+                self.current_image_path = image_path
+        except Exception as e:
+            self.log_message(f"⚠️ Erreur de chargement de l'image: {e}")
+            self.image_label.clear()
+
+    def zoom_in(self):
+        """Augmente le zoom de 20%"""
+        self.zoom_factor = min(self.zoom_factor * 1.2, self.max_zoom)
+        if self.current_image_path:
+            self.load_image_preview(self.current_image_path)
+
+    def zoom_out(self):
+        """Diminue le zoom de 20%"""
+        self.zoom_factor = max(self.zoom_factor / 1.2, self.min_zoom)
+        # Forcer le zoom_factor à rester >= min_zoom
+        self.zoom_factor = max(self.zoom_factor, self.min_zoom)
+        if self.current_image_path:
+            self.load_image_preview(self.current_image_path)
+
+    def zoom_reset(self):
+        """Réinitialise le zoom à 100%"""
+        self.zoom_factor = 1.0
+        if self.current_image_path:
+            self.load_image_preview(self.current_image_path)
+
+    def load_image_from_results(self, item):
+        """Charge une image depuis les résultats de recherche"""
+        text = item.text()
+        if " (" in text and ")" in text:
+            image_path = text.split(" (")[1][:-1]  # Extraire le chemin entre parenthèses
+            self.load_image_preview(image_path)
+            self.load_image_tags(image_path)
 
     def search_by_tag(self):
         """Recherche des images par tag dans le dossier sélectionné"""
@@ -996,31 +1091,6 @@ class PhotoSorterApp(QMainWindow):
         else:
             self.search_results.addItem("\u274c Aucun résultat trouvé.")
             self.log_message("\u274c Aucun résultat trouvé.")
-
-    def load_image_from_search(self, item):
-        """Charge une image depuis les résultats de recherche"""
-        text = item.text()
-        if " (" in text and ")" in text:
-            image_path = text.split(" (")[1][:-1]  # Extraire le chemin entre parenthèses
-            self.entry_image_path.setText(image_path)
-            self.load_image_preview(image_path)
-            self.load_image_tags(image_path)
-
-    def load_image_preview(self, image_path):
-        """Charge l'aperçu d'une image"""
-        try:
-            if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
-                image = self.raw_to_pil(image_path)
-            else:
-                image = Image.open(image_path)
-            
-            if image:
-                image.thumbnail((400, 400))
-                pixmap = self.pil2pixmap(image)
-                self.image_label.setPixmap(pixmap)
-        except Exception as e:
-            self.log_message(f"\u26a0\ufe0f Erreur de chargement de l'image: {e}")
-            self.image_label.clear()
 
     def download_default_model(self):
         """Affiche des instructions pour obtenir un modèle TensorFlow"""
