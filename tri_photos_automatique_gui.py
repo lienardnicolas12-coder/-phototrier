@@ -422,6 +422,9 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setScene(self.graphics_scene)
         self.graphics_view.setRenderHint(QPainter.Antialiasing)
         self.graphics_view.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)  # Zoom centré sur la souris
+        self.graphics_view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)         # Redimensionnement centré
+        self.graphics_view.setAlignment(Qt.AlignCenter)  # Centre le contenu dans le view
         
         self.graphics_pixmap_item = None
         self.zoom_factor = 1.0
