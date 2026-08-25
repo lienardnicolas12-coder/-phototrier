@@ -1091,6 +1091,40 @@ class PhotoSorterApp(QMainWindow):
         
         # Réactiver les mises à jour
         self.graphics_view.setUpdatesEnabled(True)
+    def wheelEvent(self, event):
+        """Gère le zoom avec la molette de la souris."""
+        if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
+            return
+
+        # Calcul du facteur de zoom (progressif)
+        zoom_factor = 1.1 if event.angleDelta().y() > 0 else 0.9  # +10% ou -10% par cran de molette
+
+        # Applique le zoom centré sur le curseur
+        self.graphics_view.setUpdatesEnabled(False)
+
+        # Récupère la position du curseur dans le viewport
+        old_pos = self.graphics_view.mapToScene(event.pos())
+
+        # Applique le zoom
+        current_scale = self.graphics_pixmap_item.transform().m11()
+        new_scale = current_scale * zoom_factor
+        
+        # Limites de zoom
+        if new_scale < self.min_zoom:
+            new_scale = self.min_zoom
+        elif new_scale > self.max_zoom:
+            new_scale = self.max_zoom
+        
+        self.graphics_pixmap_item.setScale(new_scale)
+
+        # Recentre sur le point sous le curseur (comme Photoshop)
+        new_pos = self.graphics_view.mapToScene(event.pos())
+        delta = new_pos - old_pos
+        self.graphics_pixmap_item.moveBy(-delta.x(), -delta.y())
+
+        self.graphics_view.setUpdatesEnabled(True)
+        event.accept()  # Bloque la propagation de l'événement
+
 
     def zoom_in(self):
         """Augmente le zoom de 20%"""
