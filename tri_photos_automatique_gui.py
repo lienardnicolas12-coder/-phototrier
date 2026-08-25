@@ -1398,7 +1398,20 @@ class PhotoSorterApp(QMainWindow):
             self.load_image_preview(image_path)
             self.load_image_tags(image_path)
 
+# === AUTO-SCANNER POUR LES IMPORTS QT ===
 if __name__ == "__main__":
+    import subprocess
+    import os
+    
+    # Exécute le scanner avant de lancer l'application
+    scanner_path = os.path.join(os.path.dirname(__file__), "qt_import_scanner.py")
+    if os.path.exists(scanner_path):
+        try:
+            subprocess.run([sys.executable, scanner_path, __file__], check=True)
+        except subprocess.CalledProcessError:
+            pass  # Ignore si le scanner échoue
+    
+    # Lance l'application
     app = QApplication(sys.argv)
     window = PhotoSorterApp()
     window.show()
