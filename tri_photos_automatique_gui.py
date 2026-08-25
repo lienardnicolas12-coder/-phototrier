@@ -7,20 +7,30 @@ import sys
 import numpy as np
 from pathlib import Path
 from PIL import Image
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                            QLabel, QLineEdit, QPushButton, QListWidget, QTextEdit,
-                            QTabWidget, QFrame, QFileDialog, QMessageBox, QCheckBox,
-                            QGroupBox, QRadioButton, QInputDialog, QListWidgetItem, QSizePolicy,
-                            QGraphicsView, QGraphicsScene)
-from PyQt5.QtGui import QPixmap, QIcon, QImage, QTransform, QPainter, QImageReader
-from PyQt5.QtCore import QPointF, QPoint, Qt, QThread, pyqtSignal, QSize, QEvent, QTimer
+from PyQt5.QtWidgets import (
+    QApplication, QCheckBox, QFileDialog, QFrame, QGraphicsScene,
+    QGraphicsView, QGroupBox, QInputDialog, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+    QRadioButton, QSizePolicy, QTabWidget, QTextEdit, QVBoxLayout,
+    QHBoxLayout, QWidget, QMainWindow, QScrollArea, QGraphicsPixmapItem,
+    QGraphicsItem, QSpacerItem, QButtonGroup, QToolButton
+)
+from PyQt5.QtGui import (
+    QPixmap, QImage, QPainter, QIcon, QFont, QColor,
+    QPalette, QBrush, QPen, QCursor, QTransform, QImageReader
+)
+from PyQt5.QtCore import (
+    Qt, QPoint, QPointF, QSize, QRect, QRectF, pyqtSignal,
+    QThread, QObject, QTimer, QEvent, QMargins, QSizeF
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from sentence_transformers import SentenceTransformer, util
 import torch
 import tensorflow as tf
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Configure logging, QImageReader, QImageReader
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # ====================== CONFIGURATION ======================
@@ -410,7 +420,6 @@ class PhotoSorterApp(QMainWindow):
         image_container.setFixedSize(800, 600)
         image_container.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
         layout.addWidget(image_container)
-        layout.setAlignment(Qt.AlignCenter)  # Centre le QGraphicsView dans son parent
 
         # Configuration du QGraphicsView avec taille FIXE
         self.graphics_view = QGraphicsView(image_container)
@@ -424,18 +433,18 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setRenderHint(QPainter.SmoothPixmapTransform)
         self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)  # Zoom centré sur la souris
         self.graphics_view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)         # Redimensionnement centré
-        self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)  # ✅ Zoom centré sur le viewport
-        self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
-        self.graphics_view.setDragMode(QGraphicsView.NoDrag)  # Désactive le défilement par défaut
-        self.graphics_view.setMouseTracking(True)  # Active le suivi de la souris
+        self.graphics_view.setAlignment(Qt.AlignCenter)  # Centre le contenu dans le view
+        self.graphics_view.setDragMode(QGraphicsView.NoDrag)
+        self.graphics_view.setMouseTracking(True)
         self.graphics_view.viewport().setMouseTracking(True)
         
         # Variables pour le déplacement avec la molette
-        self.middle_button_pressed = False  # Suivi du clic molette
-        self.last_mouse_pos = QPointF()     # Position précédente pour le déplacement
+        self.middle_button_pressed = False
+        self.last_mouse_pos = QPointF()
         
-        # Installe un event filter pour limiter la molette au conteneur
+        # Installe un event filter pour capturer la molette dans le viewport
         self.graphics_view.viewport().installEventFilter(self)
+        
         self.graphics_pixmap_item = None
         self.zoom_factor = 1.0
         self.min_zoom = 0.1
@@ -1039,7 +1048,7 @@ class PhotoSorterApp(QMainWindow):
         
         self.graphics_pixmap_item = self.graphics_scene.addPixmap(pixmap)
         self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
-        self.graphics_view.resetTransform()  # Réinitialise toute transformation
+        self.graphics_view.resetTransform()
         self.zoom_factor = 1.0
         self.fit_in_view()
 
@@ -1089,56 +1098,11 @@ class PhotoSorterApp(QMainWindow):
         # Appliquer le scale
         self.graphics_pixmap_item.setScale(scale_factor)
         
-        # Centrer l'image de manière absolue
-        self.graphics_pixmap_item.setPos(
-            (viewport_width - image_width * scale_factor) / 2,
-            (viewport_height - image_height * scale_factor) / 2
-        )
-        
-        # Centrer la vue sur l'image
+        # Centrer l'image
         self.graphics_view.centerOn(self.graphics_pixmap_item)
         
         # Réactiver les mises à jour
         self.graphics_view.setUpdatesEnabled(True)
-    def wheelEvent(self, event):
-        """Gère le zoom avec la molette de la souris."""
-        if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
-            return
-
-        # Si le bouton du milieu est enfoncé, on déplace l'image au lieu de zoomer
-        if self.middle_button_pressed:
-            # Déplacement de l'image avec la molette (bouton du milieu enfoncé)
-            self.graphics_view.setUpdatesEnabled(False)
-            
-            # Déplace l'image selon le mouvement de la molette
-            scroll_amount = event.pixelDelta().y() / 10  # Ajuste la sensibilité
-            self.graphics_pixmap_item.moveBy(0, -scroll_amount)
-            
-            self.graphics_view.setUpdatesEnabled(True)
-            event.accept()
-            return
-
-        # Calcul du facteur de zoom (5% par cran pour plus de fluidité)
-        zoom_factor = 1.05 if event.pixelDelta().y() > 0 else 0.95  # +5% ou -5% par cran de molette
-
-        # Applique le zoom centré sur le viewport (AnchorViewCenter)
-        self.graphics_view.setUpdatesEnabled(False)
-
-        # Applique le zoom
-        current_scale = self.graphics_pixmap_item.transform().m11()
-        new_scale = current_scale * zoom_factor
-        
-        # Limites de zoom (1% à 1000%)
-        if new_scale < self.min_zoom:
-            new_scale = self.min_zoom
-        elif new_scale > self.max_zoom:
-            new_scale = self.max_zoom
-        
-        self.graphics_pixmap_item.setScale(new_scale)
-
-        self.graphics_view.setUpdatesEnabled(True)
-        event.accept()  # Bloque la propagation de l'événement
-
 
     def zoom_in(self):
         """Augmente le zoom de 20%"""
@@ -1398,24 +1362,47 @@ class PhotoSorterApp(QMainWindow):
             self.load_image_preview(image_path)
             self.load_image_tags(image_path)
 
-# === AUTO-SCANNER POUR LES IMPORTS QT ===
-if __name__ == "__main__":
-    import subprocess
-    import os
-    
-    # Exécute le scanner avant de lancer l'application
-    scanner_path = os.path.join(os.path.dirname(__file__), "qt_import_scanner.py")
-    if os.path.exists(scanner_path):
-        try:
-            subprocess.run([sys.executable, scanner_path, __file__], check=True)
-        except subprocess.CalledProcessError:
-            pass  # Ignore si le scanner échoue
-    
-    # Lance l'application
-    app = QApplication(sys.argv)
-    window = PhotoSorterApp()
-    window.show()
-    sys.exit(app.exec_())
+
+    def wheelEvent(self, event):
+        """Gère le zoom avec la molette de la souris."""
+        if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
+            return
+
+        # Si le bouton du milieu est enfoncé, on déplace l'image verticalement
+        if self.middle_button_pressed:
+            self.graphics_view.setUpdatesEnabled(False)
+            scroll_amount = event.pixelDelta().y() / 5
+            self.graphics_pixmap_item.moveBy(0, -scroll_amount)
+            self.graphics_view.setUpdatesEnabled(True)
+            event.accept()
+            return
+
+        # Zoom avec la molette (5% par cran)
+        zoom_factor = 1.05 if event.pixelDelta().y() > 0 else 0.95
+        self.graphics_view.setUpdatesEnabled(False)
+        
+        # Position du curseur avant le zoom
+        cursor_pos = self.graphics_view.mapToScene(event.pos())
+        
+        # Applique le zoom
+        current_scale = self.graphics_pixmap_item.transform().m11()
+        new_scale = current_scale * zoom_factor
+        
+        # Limites de zoom (10% à 1000%)
+        if new_scale < 0.1:
+            new_scale = 0.1
+        elif new_scale > 10.0:
+            new_scale = 10.0
+        
+        self.graphics_pixmap_item.setScale(new_scale)
+        
+        # Recentre sur le point sous le curseur
+        new_cursor_pos = self.graphics_view.mapToScene(event.pos())
+        delta = new_cursor_pos - cursor_pos
+        self.graphics_pixmap_item.moveBy(-delta.x(), -delta.y())
+        
+        self.graphics_view.setUpdatesEnabled(True)
+        event.accept()
 
     def mousePressEvent(self, event):
         """Gère le clic de la souris pour le déplacement."""
@@ -1430,11 +1417,9 @@ if __name__ == "__main__":
     def mouseMoveEvent(self, event):
         """Gère le déplacement de la souris avec le bouton du milieu enfoncé."""
         if self.middle_button_pressed and hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-            # Calcule le déplacement
             delta = event.localPos() - self.last_mouse_pos
             self.last_mouse_pos = event.localPos()
             
-            # Déplace l'image
             self.graphics_view.setUpdatesEnabled(False)
             self.graphics_pixmap_item.moveBy(-delta.x(), -delta.y())
             self.graphics_view.setUpdatesEnabled(True)
@@ -1454,14 +1439,23 @@ if __name__ == "__main__":
     def eventFilter(self, obj, event):
         """Filtre les événements pour le viewport du QGraphicsView."""
         if obj == self.graphics_view.viewport():
-            if event.type() == event.Type.MouseButtonPress and event.button() == Qt.MiddleButton:
+            if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MiddleButton:
                 self.mousePressEvent(event)
                 return True
-            elif event.type() == event.Type.MouseMove and self.middle_button_pressed:
+            elif event.type() == QEvent.Type.MouseMove and self.middle_button_pressed:
                 self.mouseMoveEvent(event)
                 return True
-            elif event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MiddleButton:
+            elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MiddleButton:
                 self.mouseReleaseEvent(event)
+                return True
+            elif event.type() == QEvent.Type.Wheel:
+                self.wheelEvent(event)
                 return True
         return super().eventFilter(obj, event)
 
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = PhotoSorterApp()
+    window.show()
+    sys.exit(app.exec_())
