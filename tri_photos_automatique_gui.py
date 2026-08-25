@@ -13,15 +13,14 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                             QGroupBox, QRadioButton, QInputDialog, QListWidgetItem, QSizePolicy,
                             QGraphicsView, QGraphicsScene)
 from PyQt5.QtGui import QPixmap, QIcon, QImage, QTransform, QPainter, QImageReader
-from PyQt5.QtCore import QPointF
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt5.QtCore import QPointF, QPoint, Qt, QThread, pyqtSignal, QSize, QEvent, QTimer
 from sentence_transformers import SentenceTransformer, util
 import torch
 import tensorflow as tf
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Configure logging, QImageReader
+# Configure logging, QImageReader, QImageReader
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # ====================== CONFIGURATION ======================
