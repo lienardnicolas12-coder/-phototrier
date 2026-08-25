@@ -1030,6 +1030,7 @@ class PhotoSorterApp(QMainWindow):
         
         self.graphics_pixmap_item = self.graphics_scene.addPixmap(pixmap)
         self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
+        self.graphics_view.resetTransform()  # Réinitialise toute transformation
         self.zoom_factor = 1.0
         self.fit_in_view()
 
@@ -1079,7 +1080,13 @@ class PhotoSorterApp(QMainWindow):
         # Appliquer le scale
         self.graphics_pixmap_item.setScale(scale_factor)
         
-        # Centrer l'image
+        # Centrer l'image de manière absolue
+        self.graphics_pixmap_item.setPos(
+            (viewport_width - image_width * scale_factor) / 2,
+            (viewport_height - image_height * scale_factor) / 2
+        )
+        
+        # Centrer la vue sur l'image
         self.graphics_view.centerOn(self.graphics_pixmap_item)
         
         # Réactiver les mises à jour
