@@ -432,7 +432,7 @@ class PhotoSorterApp(QMainWindow):
         
         # Variables pour le déplacement avec la molette
         self.middle_button_pressed = False  # Suivi du clic molette
-        self.last_mouse_pos = QPoint()     # Position précédente pour le déplacement
+        self.last_mouse_pos = QPointF()     # Position précédente pour le déplacement
         
         # Installe un event filter pour limiter la molette au conteneur
         self.graphics_view.viewport().installEventFilter(self)
@@ -1408,7 +1408,7 @@ if __name__ == "__main__":
         """Gère le clic de la souris pour le déplacement."""
         if event.button() == Qt.MiddleButton:
             self.middle_button_pressed = True
-            self.last_mouse_pos = event.pos()
+            self.last_mouse_pos = event.localPos()
             self.graphics_view.setCursor(Qt.ClosedHandCursor)
             event.accept()
         else:
@@ -1418,8 +1418,8 @@ if __name__ == "__main__":
         """Gère le déplacement de la souris avec le bouton du milieu enfoncé."""
         if self.middle_button_pressed and hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
             # Calcule le déplacement
-            delta = event.pos() - self.last_mouse_pos
-            self.last_mouse_pos = event.pos()
+            delta = event.localPos() - self.last_mouse_pos
+            self.last_mouse_pos = event.localPos()
             
             # Déplace l'image
             self.graphics_view.setUpdatesEnabled(False)
