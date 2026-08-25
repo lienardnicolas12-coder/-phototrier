@@ -426,6 +426,9 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)  # Zoom centré sur la souris
         self.graphics_view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)         # Redimensionnement centré
         self.graphics_view.setAlignment(Qt.AlignCenter)  # Centre le contenu dans le view
+        self.graphics_view.setDragMode(QGraphicsView.NoDrag)  # Désactive le défilement (permet le zoom avec molette)
+        self.graphics_view.setMouseTracking(True)  # Active le suivi de la souris
+        self.setMouseTracking(True)  # Active le suivi pour la fenêtre
         
         self.graphics_pixmap_item = None
         self.zoom_factor = 1.0
@@ -1096,20 +1099,22 @@ class PhotoSorterApp(QMainWindow):
         if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
             return
 
-        # Calcul du facteur de zoom (progressif)
-        zoom_factor = 1.1 if event.angleDelta().y() > 0 else 0.9  # +10% ou -10% par cran de molette
+        # Calcul du facteur de zoom (5% par cran pour plus de fluidité)
+        zoom_factor = 1.05 if event.pixelDelta().y() > 0 else 0.95  # +5% ou -5% par cran de molette
 
         # Applique le zoom centré sur le curseur
         self.graphics_view.setUpdatesEnabled(False)
 
         # Récupère la position du curseur dans le viewport
-        old_pos = self.graphics_view.mapToScene(event.pos())
+        cursor_pos = self.graphics_view.mapToScene(event.pos())
 
         # Applique le zoom
         current_scale = self.graphics_pixmap_item.transform().m11()
         new_scale = current_scale * zoom_factor
         
-        # Limites de zoom
+        # Limites de zoom (1% à 1000%)
+        self.min_zoom = 0.01
+        self.max_zoom = 10.0
         if new_scale < self.min_zoom:
             new_scale = self.min_zoom
         elif new_scale > self.max_zoom:
@@ -1118,8 +1123,8 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_pixmap_item.setScale(new_scale)
 
         # Recentre sur le point sous le curseur (comme Photoshop)
-        new_pos = self.graphics_view.mapToScene(event.pos())
-        delta = new_pos - old_pos
+        new_cursor_pos = self.graphics_view.mapToScene(event.pos())
+        delta = new_cursor_pos - cursor_pos
         self.graphics_pixmap_item.moveBy(-delta.x(), -delta.y())
 
         self.graphics_view.setUpdatesEnabled(True)
