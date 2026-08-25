@@ -1368,16 +1368,7 @@ class PhotoSorterApp(QMainWindow):
         if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
             return
 
-        # Si le bouton du milieu est enfoncé, on déplace l'image verticalement
-        if self.middle_button_pressed:
-            self.graphics_view.setUpdatesEnabled(False)
-            scroll_amount = event.pixelDelta().y() / 5
-            self.graphics_pixmap_item.moveBy(0, -scroll_amount)
-            self.graphics_view.setUpdatesEnabled(True)
-            event.accept()
-            return
-
-        # Zoom avec la molette (5% par cran)
+        # Zoom avec la molette (5% par cran) - centré sur le curseur
         zoom_factor = 1.05 if event.pixelDelta().y() > 0 else 0.95
         self.graphics_view.setUpdatesEnabled(False)
         
@@ -1421,7 +1412,8 @@ class PhotoSorterApp(QMainWindow):
             self.last_mouse_pos = event.localPos()
             
             self.graphics_view.setUpdatesEnabled(False)
-            self.graphics_pixmap_item.moveBy(-delta.x(), -delta.y())
+            # Déplacement dans la direction de la souris (pas inversé)
+            self.graphics_pixmap_item.moveBy(delta.x(), delta.y())
             self.graphics_view.setUpdatesEnabled(True)
             event.accept()
         else:
