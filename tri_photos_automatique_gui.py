@@ -411,6 +411,7 @@ class PhotoSorterApp(QMainWindow):
         image_container.setFixedSize(800, 600)
         image_container.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
         layout.addWidget(image_container)
+        layout.setAlignment(Qt.AlignCenter)  # Centre le QGraphicsView dans son parent
 
         # Configuration du QGraphicsView avec taille FIXE
         self.graphics_view = QGraphicsView(image_container)
