@@ -1105,14 +1105,20 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setUpdatesEnabled(True)
 
     def zoom_in(self):
-        """Augmente le zoom de 20%"""
-        self.zoom_factor = min(self.zoom_factor * 1.2, self.max_zoom)
-        self.fit_in_view()
+        """Zoom avant avec lissage (7 étapes max)."""
+        if hasattr(self, 'graphics_pixmap_item') and self.current_zoom_index < 14 and not self.zoom_active:
+            self.target_zoom_index = self.current_zoom_index + 1
+            if not self.zoom_timer.isActive():
+                self.zoom_timer.start()
+                self.zoom_active = True
 
     def zoom_out(self):
-        """Diminue le zoom de 20%"""
-        self.zoom_factor = max(self.zoom_factor / 1.2, self.min_zoom)
-        self.fit_in_view()
+        """Zoom arrière avec lissage (7 étapes max)."""
+        if hasattr(self, 'graphics_pixmap_item') and self.current_zoom_index > 0 and not self.zoom_active:
+            self.target_zoom_index = self.current_zoom_index - 1
+            if not self.zoom_timer.isActive():
+                self.zoom_timer.start()
+                self.zoom_active = True
 
     def zoom_reset(self):
         """Réinitialise le zoom à 100%"""
