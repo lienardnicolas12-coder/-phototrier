@@ -21,7 +21,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtCore import (
     Qt, QPoint, QPointF, QSize, QRect, QRectF, pyqtSignal,
-    QThread, QObject, QEvent, QMargins, QSizeF
+    QThread, QObject, QTimer, QEvent, QMargins, QSizeF
 )
 from sentence_transformers import SentenceTransformer, util
 import torch
@@ -224,11 +224,26 @@ class PhotoSorterApp(QMainWindow):
         self.watchdog_worker = None
         self.text_embeddings = None
 
-        # Variables pour le zoom simplifié
-        self.zoom_factor = 1.0
-        self.min_zoom = 0.1
-        self.max_zoom = 3.0
-        self.zoom_step = 1.1
+        # Variables pour le zoom par étapes (7 étapes dans chaque sens)
+        self.zoom_levels = [
+            0.513158,  # Niveau 0
+            0.56447,   # Niveau 1
+            0.620921,  # Niveau 2
+            0.683013,  # Niveau 3
+            0.751315,  # Niveau 4
+            0.826446,  # Niveau 5
+            0.90909,   # Niveau 6
+            1.0,        # Niveau 7 (normal)
+            1.1,        # Niveau 8
+            1.21,       # Niveau 9
+            1.331,      # Niveau 10
+            1.4641,     # Niveau 11
+            1.61051,    # Niveau 12
+            1.771561,   # Niveau 13
+            1.9487171   # Niveau 14
+        ]
+        self.current_zoom_index = 7  # Niveau initial (100%)
+        self.zoom_active = False
         self.current_image_path = None
 
         # Attributs de l'interface
@@ -446,6 +461,12 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.viewport().installEventFilter(self)
         
         self.graphics_pixmap_item = None
+        
+        # Timer et cible pour le zoom fluide
+        self.zoom_timer = QTimer(self)
+        self.zoom_timer.setInterval(16)
+        self.zoom_timer.timeout.connect(self._smooth_zoom_step)
+        self.target_zoom_index = 7
 
         # Boutons de zoom
         zoom_frame = QFrame()
@@ -1044,13 +1065,55 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_pixmap_item = self.graphics_scene.addPixmap(pixmap)
         self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
         self.graphics_view.resetTransform()
-        self.zoom_factor = 1.0
-        self.fit_in_view()
+        self.current_zoom_index = 7
+        self.graphics_pixmap_item.setScale(self.zoom_levels[self.current_zoom_index])
+        self.graphics_view.centerOn(self.graphics_pixmap_item)
 
     def clear_image(self):
         """Efface l'image affichée"""
         self.graphics_scene.clear()
         self.graphics_pixmap_item = None
+
+    def _smooth_zoom_step(self):
+        """Applique une étape de zoom fluide."""
+        if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
+            self.zoom_timer.stop()
+            self.zoom_active = False
+            return
+
+        # Passe au niveau suivant/précédent
+        if self.current_zoom_index < self.target_zoom_index:
+            self.current_zoom_index += 1
+        elif self.current_zoom_index > self.target_zoom_index:
+            self.current_zoom_index -= 1
+
+        # Applique le zoom centré
+        self._apply_zoom_level(self.zoom_levels[self.current_zoom_index])
+
+        # Arrête le timer si la cible est atteinte
+        if self.current_zoom_index == self.target_zoom_index:
+            self.zoom_timer.stop()
+            self.zoom_active = False
+
+    def _apply_zoom_level(self, scale):
+        """Applique un niveau de zoom centré sur le viewport."""
+        if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
+            return
+
+        self.graphics_view.setUpdatesEnabled(False)
+
+        # Centre du viewport
+        cursor_pos = self.graphics_view.viewport().rect().center()
+        old_pos = self.graphics_view.mapToScene(cursor_pos)
+
+        # Applique le zoom
+        self.graphics_pixmap_item.setScale(scale)
+
+        # Recentrage parfait
+        new_pos = self.graphics_view.mapToScene(cursor_pos)
+        self.graphics_pixmap_item.moveBy(old_pos.x() - new_pos.x(), old_pos.y() - new_pos.y())
+
+        self.graphics_view.setUpdatesEnabled(True)
 
     def fit_in_view(self):
         """Adapte l'image à la taille du QGraphicsView en conservant le ratio d'aspect"""
@@ -1084,7 +1147,7 @@ class PhotoSorterApp(QMainWindow):
         # Calculer le facteur d'échelle pour adapter l'image au viewport
         width_ratio = viewport_width / image_width
         height_ratio = viewport_height / image_height
-        scale_factor = min(width_ratio, height_ratio) * self.zoom_factor
+        scale_factor = min(width_ratio, height_ratio)
         
         # Réinitialiser la transformation
         self.graphics_pixmap_item.setTransform(QTransform())
@@ -1095,29 +1158,35 @@ class PhotoSorterApp(QMainWindow):
         # Centrer l'image
         self.graphics_view.centerOn(self.graphics_pixmap_item)
         
+        # Réinitialiser l'index de zoom
+        self.current_zoom_index = 7
+        
         # Réactiver les mises à jour
         self.graphics_view.setUpdatesEnabled(True)
 
     def zoom_in(self):
-        """Zoom avant avec facteur simple"""
-        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-            new_zoom = self.zoom_factor * self.zoom_step
-            if new_zoom <= self.max_zoom:
-                self.zoom_factor = new_zoom
-                self.fit_in_view()
+        """Zoom avant avec lissage (7 étapes max)."""
+        if hasattr(self, 'graphics_pixmap_item') and self.current_zoom_index < 14 and not self.zoom_active:
+            self.target_zoom_index = self.current_zoom_index + 1
+            if not self.zoom_timer.isActive():
+                self.zoom_timer.start()
+                self.zoom_active = True
 
     def zoom_out(self):
-        """Zoom arrière avec facteur simple"""
-        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-            new_zoom = self.zoom_factor / self.zoom_step
-            if new_zoom >= self.min_zoom:
-                self.zoom_factor = new_zoom
-                self.fit_in_view()
+        """Zoom arrière avec lissage (7 étapes max)."""
+        if hasattr(self, 'graphics_pixmap_item') and self.current_zoom_index > 0 and not self.zoom_active:
+            self.target_zoom_index = self.current_zoom_index - 1
+            if not self.zoom_timer.isActive():
+                self.zoom_timer.start()
+                self.zoom_active = True
 
     def zoom_reset(self):
         """Réinitialise le zoom à 100%"""
-        self.zoom_factor = 1.0
-        self.fit_in_view()
+        if hasattr(self, 'graphics_pixmap_item') and self.current_zoom_index != 7 and not self.zoom_active:
+            self.target_zoom_index = 7
+            if not self.zoom_timer.isActive():
+                self.zoom_timer.start()
+                self.zoom_active = True
 
     def load_image_preview(self, image_path):
         """Charge une vignette de l'image (max 1000px de large) avec QImageReader"""
