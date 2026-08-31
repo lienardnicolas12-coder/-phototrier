@@ -225,18 +225,18 @@ class PhotoSorterApp(QMainWindow):
         self.watchdog_worker = None
         self.text_embeddings = None
 
-        # Variables pour le zoom simplifié avec lissage
+        # Variables pour le zoom avec lissage et 7 étapes EXACTES
         self.zoom_factor = 1.0
-        self.min_zoom = 0.5132  # 7 étapes arrière
-        self.max_zoom = 1.9487  # 7 étapes avant
-        self.zoom_step = 1.1    # Facteur de zoom
+        self.min_zoom = 0.513158  # ✅ 1.0 / (1.1^7) = 0.513158
+        self.max_zoom = 1.948717  # ✅ 1.0 * (1.1^7) = 1.948717
+        self.zoom_step = 1.1
 
         # Variables pour le lissage
         self.zoom_timer = QTimer(self)
         self.zoom_timer.setInterval(16)  # 60 FPS
         self.zoom_timer.timeout.connect(self._apply_smooth_zoom)
-        self.zoom_target = 1.0  # Cible du zoom
-        self.zoom_current = 1.0  # Valeur actuelle (interpolation)
+        self.zoom_target = 1.0
+        self.zoom_current = 1.0  # ✅ Doit être égal à zoom_factor au départ
         self.zoom_active = False
 
         self.current_image_path = None
@@ -1099,13 +1099,14 @@ class PhotoSorterApp(QMainWindow):
         # en conservant le ratio d'aspect (comme object-fit: contain)
         width_ratio = viewport_width / image_width
         height_ratio = viewport_height / image_height
-        scale_factor = min(width_ratio, height_ratio) * self.zoom_factor
+        scale_factor = min(width_ratio, height_ratio) * self.zoom_current
         
         # Réinitialiser la transformation
         self.graphics_pixmap_item.setTransform(QTransform())
         
         # Appliquer le scale
         self.graphics_pixmap_item.setScale(scale_factor)
+        self.zoom_factor = scale_factor
         self.zoom_current = scale_factor
         self.zoom_target = scale_factor
         
@@ -1118,9 +1119,9 @@ class PhotoSorterApp(QMainWindow):
     def zoom_in(self):
         """Zoom avant avec lissage et centrage."""
         if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
-            new_zoom = self.zoom_factor * self.zoom_step
+            # Calculer la nouvelle cible à partir de zoom_current, pas zoom_factor
+            new_zoom = self.zoom_current * self.zoom_step
             if new_zoom <= self.max_zoom:
-                self.zoom_factor = new_zoom
                 self.zoom_target = new_zoom
                 if not self.zoom_timer.isActive():
                     self.zoom_timer.start()
@@ -1129,9 +1130,9 @@ class PhotoSorterApp(QMainWindow):
     def zoom_out(self):
         """Zoom arrière avec lissage et centrage."""
         if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
-            new_zoom = self.zoom_factor / self.zoom_step
+            # Calculer la nouvelle cible à partir de zoom_current, pas zoom_factor
+            new_zoom = self.zoom_current / self.zoom_step
             if new_zoom >= self.min_zoom:
-                self.zoom_factor = new_zoom
                 self.zoom_target = new_zoom
                 if not self.zoom_timer.isActive():
                     self.zoom_timer.start()
@@ -1142,17 +1143,19 @@ class PhotoSorterApp(QMainWindow):
         self.zoom_factor = 1.0
         self.zoom_target = 1.0
         self.zoom_current = 1.0
-        self.fit_in_view()
+        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
+            self.graphics_pixmap_item.setScale(1.0)
+            self.graphics_view.centerOn(self.graphics_pixmap_item)
 
     def _apply_smooth_zoom(self):
-        """Applique le zoom progressif avec interpolation."""
+        """Applique le zoom progressif avec interpolation et maintien du centrage."""
         if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
             self.zoom_timer.stop()
             self.zoom_active = False
             return
 
-        # Interpolation linéaire (5% de la différence par frame)
-        self.zoom_current += (self.zoom_target - self.zoom_current) * 0.05
+        # Interpolation linéaire (20% de la différence par frame pour plus de fluidité)
+        self.zoom_current += (self.zoom_target - self.zoom_current) * 0.2
         
         # Arrêter si on est très proche de la cible
         if abs(self.zoom_current - self.zoom_target) < 0.001:
@@ -1161,10 +1164,9 @@ class PhotoSorterApp(QMainWindow):
             self.zoom_timer.stop()
             self.zoom_active = False
         
-        # Appliquer le zoom
+        # Appliquer le zoom SANS recentrer (le centrage est géré par la position de la scène)
         self.graphics_view.setUpdatesEnabled(False)
         self.graphics_pixmap_item.setScale(self.zoom_current)
-        self.graphics_view.centerOn(self.graphics_pixmap_item)
         self.graphics_view.setUpdatesEnabled(True)
 
 
