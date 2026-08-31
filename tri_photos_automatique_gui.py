@@ -225,10 +225,20 @@ class PhotoSorterApp(QMainWindow):
         self.watchdog_worker = None
         self.text_embeddings = None
 
-        # Attributs pour le zoom
+        # Variables pour le zoom simplifié avec lissage
         self.zoom_factor = 1.0
-        self.min_zoom = 0.1
-        self.max_zoom = 2.0
+        self.min_zoom = 0.5132  # 7 étapes arrière
+        self.max_zoom = 1.9487  # 7 étapes avant
+        self.zoom_step = 1.1    # Facteur de zoom
+
+        # Variables pour le lissage
+        self.zoom_timer = QTimer(self)
+        self.zoom_timer.setInterval(16)  # 60 FPS
+        self.zoom_timer.timeout.connect(self._apply_smooth_zoom)
+        self.zoom_target = 1.0  # Cible du zoom
+        self.zoom_current = 1.0  # Valeur actuelle (interpolation)
+        self.zoom_active = False
+
         self.current_image_path = None
 
         # Attributs de l'interface
@@ -446,9 +456,6 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.viewport().installEventFilter(self)
         
         self.graphics_pixmap_item = None
-        self.zoom_factor = 1.0
-        self.min_zoom = 0.1
-        self.max_zoom = 3.0
 
         # Boutons de zoom
         zoom_frame = QFrame()
@@ -1050,6 +1057,8 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
         self.graphics_view.resetTransform()
         self.zoom_factor = 1.0
+        self.zoom_current = 1.0
+        self.zoom_target = 1.0
         self.fit_in_view()
 
     def clear_image(self):
@@ -1097,6 +1106,8 @@ class PhotoSorterApp(QMainWindow):
         
         # Appliquer le scale
         self.graphics_pixmap_item.setScale(scale_factor)
+        self.zoom_current = scale_factor
+        self.zoom_target = scale_factor
         
         # Centrer l'image
         self.graphics_view.centerOn(self.graphics_pixmap_item)
@@ -1105,25 +1116,56 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setUpdatesEnabled(True)
 
     def zoom_in(self):
-        """Zoom avant avec lissage (7 étapes max)."""
-        if hasattr(self, 'graphics_pixmap_item') and self.current_zoom_index < 14 and not self.zoom_active:
-            self.target_zoom_index = self.current_zoom_index + 1
-            if not self.zoom_timer.isActive():
-                self.zoom_timer.start()
-                self.zoom_active = True
+        """Zoom avant avec lissage et centrage."""
+        if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
+            new_zoom = self.zoom_factor * self.zoom_step
+            if new_zoom <= self.max_zoom:
+                self.zoom_factor = new_zoom
+                self.zoom_target = new_zoom
+                if not self.zoom_timer.isActive():
+                    self.zoom_timer.start()
+                    self.zoom_active = True
 
     def zoom_out(self):
-        """Zoom arrière avec lissage (7 étapes max)."""
-        if hasattr(self, 'graphics_pixmap_item') and self.current_zoom_index > 0 and not self.zoom_active:
-            self.target_zoom_index = self.current_zoom_index - 1
-            if not self.zoom_timer.isActive():
-                self.zoom_timer.start()
-                self.zoom_active = True
+        """Zoom arrière avec lissage et centrage."""
+        if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
+            new_zoom = self.zoom_factor / self.zoom_step
+            if new_zoom >= self.min_zoom:
+                self.zoom_factor = new_zoom
+                self.zoom_target = new_zoom
+                if not self.zoom_timer.isActive():
+                    self.zoom_timer.start()
+                    self.zoom_active = True
 
     def zoom_reset(self):
         """Réinitialise le zoom à 100%"""
         self.zoom_factor = 1.0
+        self.zoom_target = 1.0
+        self.zoom_current = 1.0
         self.fit_in_view()
+
+    def _apply_smooth_zoom(self):
+        """Applique le zoom progressif avec interpolation."""
+        if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
+            self.zoom_timer.stop()
+            self.zoom_active = False
+            return
+
+        # Interpolation linéaire (5% de la différence par frame)
+        self.zoom_current += (self.zoom_target - self.zoom_current) * 0.05
+        
+        # Arrêter si on est très proche de la cible
+        if abs(self.zoom_current - self.zoom_target) < 0.001:
+            self.zoom_current = self.zoom_target
+            self.zoom_factor = self.zoom_target
+            self.zoom_timer.stop()
+            self.zoom_active = False
+        
+        # Appliquer le zoom
+        self.graphics_view.setUpdatesEnabled(False)
+        self.graphics_pixmap_item.setScale(self.zoom_current)
+        self.graphics_view.centerOn(self.graphics_pixmap_item)
+        self.graphics_view.setUpdatesEnabled(True)
 
 
     def load_image_preview(self, image_path):
