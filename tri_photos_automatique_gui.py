@@ -1055,7 +1055,8 @@ class PhotoSorterApp(QMainWindow):
         
         self.graphics_pixmap_item = self.graphics_scene.addPixmap(pixmap)
         self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
-        self.graphics_view.resetTransform()
+        # Réinitialiser la transformation de l'item (toujours à 1.0)
+        self.graphics_pixmap_item.setTransform(QTransform())
         self.zoom_factor = 1.0
         self.zoom_current = 1.0
         self.zoom_target = 1.0
@@ -1099,21 +1100,24 @@ class PhotoSorterApp(QMainWindow):
         # en conservant le ratio d'aspect (comme object-fit: contain)
         width_ratio = viewport_width / image_width
         height_ratio = viewport_height / image_height
-        scale_factor = min(width_ratio, height_ratio) * self.zoom_current
+        self.base_scale = min(width_ratio, height_ratio)
         
-        # Réinitialiser la transformation
+        # Réinitialiser la transformation de l'item (toujours à 1.0)
         self.graphics_pixmap_item.setTransform(QTransform())
         
-        # Appliquer le scale avec setTransform
+        # Appliquer l'échelle d'adaptation sur la VUE
         transform = QTransform()
-        transform.scale(scale_factor, scale_factor)
-        self.graphics_pixmap_item.setTransform(transform)
-        self.zoom_factor = scale_factor
-        self.zoom_current = scale_factor
-        self.zoom_target = scale_factor
+        transform.scale(self.base_scale, self.base_scale)
+        self.graphics_view.setTransform(transform)
         
-        # Centrer l'image
-        self.graphics_view.centerOn(self.graphics_pixmap_item)
+        # Le zoom de la vue est à base_scale (100% = base_scale)
+        self.zoom_factor = 1.0
+        self.zoom_current = 1.0
+        self.zoom_target = 1.0
+        
+        # Centrer l'image avec le centre du viewport
+        viewport_center = self.graphics_view.viewport().rect().center()
+        self.graphics_view.centerOn(self.graphics_view.mapToScene(viewport_center))
         
         # Réactiver les mises à jour
         self.graphics_view.setUpdatesEnabled(True)
@@ -1139,40 +1143,46 @@ class PhotoSorterApp(QMainWindow):
                     self.zoom_active = True
 
     def zoom_reset(self):
-        """Réinitialise le zoom à 100% avec setTransform + centerOn."""
+        """Réinitialise le zoom à 100% (base_scale)."""
         self.zoom_factor = 1.0
         self.zoom_target = 1.0
         self.zoom_current = 1.0
-        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
+        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item and hasattr(self, 'base_scale'):
+            # Réappliquer l'échelle de base
             transform = QTransform()
-            transform.scale(1.0, 1.0)
-            self.graphics_pixmap_item.setTransform(transform)
-            self.graphics_view.centerOn(self.graphics_pixmap_item)
+            transform.scale(self.base_scale, self.base_scale)
+            self.graphics_view.setTransform(transform)
+            # Centrage final avec le centre du viewport
+            viewport_center = self.graphics_view.viewport().rect().center()
+            self.graphics_view.centerOn(self.graphics_view.mapToScene(viewport_center))
 
     def _apply_smooth_zoom(self):
-        """Applique le zoom avec setTransform + centerOn."""
-        if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
+        """Applique le zoom SANS tremblements (centerOn UNIQUEMENT à la fin)."""
+        if not self.zoom_active or not self.graphics_pixmap_item:
             self.zoom_timer.stop()
-            self.zoom_active = False
             return
 
-        # Interpolation linéaire (20% par frame)
-        self.zoom_current += (self.zoom_target - self.zoom_current) * 0.2
-        
-        # Arrêter si proche de la cible
-        if abs(self.zoom_current - self.zoom_target) < 0.001:
+        # Interpolation linéaire (30% de la distance)
+        self.zoom_current += (self.zoom_target - self.zoom_current) * 0.3
+
+        # ✅ Applique le zoom sur la vue (SANS recentrer à chaque tick)
+        if hasattr(self, 'base_scale'):
+            total_scale = self.base_scale * self.zoom_current
+            transform = QTransform().scale(total_scale, total_scale)
+            self.graphics_view.setTransform(transform)
+        else:
+            transform = QTransform().scale(self.zoom_current, self.zoom_current)
+            self.graphics_view.setTransform(transform)
+
+        # ✅ Recentrage UNIQUEMENT à la fin du zoom
+        if abs(self.zoom_target - self.zoom_current) < 0.001:
             self.zoom_current = self.zoom_target
             self.zoom_factor = self.zoom_target
+            # Recentrage FINAL (1 seule fois)
+            viewport_center = self.graphics_view.viewport().rect().center()
+            self.graphics_view.centerOn(self.graphics_view.mapToScene(viewport_center))
             self.zoom_timer.stop()
             self.zoom_active = False
-        
-        # Appliquer le zoom avec setTransform + centerOn
-        self.graphics_view.setUpdatesEnabled(False)
-        transform = QTransform()
-        transform.scale(self.zoom_current, self.zoom_current)
-        self.graphics_pixmap_item.setTransform(transform)
-        self.graphics_view.centerOn(self.graphics_pixmap_item)
-        self.graphics_view.setUpdatesEnabled(True)
 
 
     def load_image_preview(self, image_path):
@@ -1456,7 +1466,11 @@ class PhotoSorterApp(QMainWindow):
     def eventFilter(self, obj, event):
         """Filtre les événements pour le viewport du QGraphicsView."""
         if obj == self.graphics_view.viewport():
-            if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MiddleButton:
+            # Désactiver définitivement la molette
+            if event.type() == QEvent.Type.Wheel:
+                event.ignore()
+                return True
+            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MiddleButton:
                 self.mousePressEvent(event)
                 return True
             elif event.type() == QEvent.Type.MouseMove and self.middle_button_pressed:
