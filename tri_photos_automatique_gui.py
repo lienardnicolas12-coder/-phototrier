@@ -225,10 +225,10 @@ class PhotoSorterApp(QMainWindow):
         self.watchdog_worker = None
         self.text_embeddings = None
 
-        # Variables pour le zoom avec lissage et 7 étapes EXACTES
+        # Variables pour le zoom simplifié avec lissage et ancrage stable
         self.zoom_factor = 1.0
-        self.min_zoom = 0.513158  # ✅ 1.0 / (1.1^7) = 0.513158
-        self.max_zoom = 1.948717  # ✅ 1.0 * (1.1^7) = 1.948717
+        self.min_zoom = 0.513158  # 7 étapes arrière : 1.0 / (1.1^7)
+        self.max_zoom = 1.948717  # 7 étapes avant : 1.0 * (1.1^7)
         self.zoom_step = 1.1
 
         # Variables pour le lissage
@@ -236,7 +236,7 @@ class PhotoSorterApp(QMainWindow):
         self.zoom_timer.setInterval(16)  # 60 FPS
         self.zoom_timer.timeout.connect(self._apply_smooth_zoom)
         self.zoom_target = 1.0
-        self.zoom_current = 1.0  # ✅ Doit être égal à zoom_factor au départ
+        self.zoom_current = 1.0
         self.zoom_active = False
 
         self.current_image_path = None
@@ -1101,8 +1101,9 @@ class PhotoSorterApp(QMainWindow):
         height_ratio = viewport_height / image_height
         scale_factor = min(width_ratio, height_ratio) * self.zoom_current
         
-        # Réinitialiser la transformation
+        # Réinitialiser la transformation et la position
         self.graphics_pixmap_item.setTransform(QTransform())
+        self.graphics_pixmap_item.setPos(0, 0)
         
         # Appliquer le scale
         self.graphics_pixmap_item.setScale(scale_factor)
@@ -1117,56 +1118,71 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setUpdatesEnabled(True)
 
     def zoom_in(self):
-        """Zoom avant avec lissage et centrage."""
+        """Zoom avant avec solution hybride setScale + setPos."""
         if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
-            # Calculer la nouvelle cible à partir de zoom_current, pas zoom_factor
             new_zoom = self.zoom_current * self.zoom_step
             if new_zoom <= self.max_zoom:
+                # Stocker la position du centre avant le zoom
+                self._zoom_center = self.graphics_view.mapToScene(self.graphics_view.viewport().rect().center())
                 self.zoom_target = new_zoom
                 if not self.zoom_timer.isActive():
                     self.zoom_timer.start()
                     self.zoom_active = True
 
     def zoom_out(self):
-        """Zoom arrière avec lissage et centrage."""
+        """Zoom arrière avec solution hybride setScale + setPos."""
         if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
-            # Calculer la nouvelle cible à partir de zoom_current, pas zoom_factor
             new_zoom = self.zoom_current / self.zoom_step
             if new_zoom >= self.min_zoom:
+                # Stocker la position du centre avant le zoom
+                self._zoom_center = self.graphics_view.mapToScene(self.graphics_view.viewport().rect().center())
                 self.zoom_target = new_zoom
                 if not self.zoom_timer.isActive():
                     self.zoom_timer.start()
                     self.zoom_active = True
 
     def zoom_reset(self):
-        """Réinitialise le zoom à 100%"""
+        """Réinitialise le zoom à 100% avec centrage."""
         self.zoom_factor = 1.0
         self.zoom_target = 1.0
         self.zoom_current = 1.0
         if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
             self.graphics_pixmap_item.setScale(1.0)
+            self.graphics_pixmap_item.setPos(0, 0)
             self.graphics_view.centerOn(self.graphics_pixmap_item)
 
     def _apply_smooth_zoom(self):
-        """Applique le zoom progressif avec interpolation et maintien du centrage."""
+        """Solution hybride : setScale + setPos pour ancrage stable."""
         if not hasattr(self, 'graphics_pixmap_item') or not self.graphics_pixmap_item:
             self.zoom_timer.stop()
             self.zoom_active = False
             return
 
-        # Interpolation linéaire (20% de la différence par frame pour plus de fluidité)
+        # Interpolation linéaire (20% par frame)
         self.zoom_current += (self.zoom_target - self.zoom_current) * 0.2
         
-        # Arrêter si on est très proche de la cible
+        # Arrêter si proche de la cible
         if abs(self.zoom_current - self.zoom_target) < 0.001:
             self.zoom_current = self.zoom_target
             self.zoom_factor = self.zoom_target
             self.zoom_timer.stop()
             self.zoom_active = False
         
-        # Appliquer le zoom SANS recentrer (le centrage est géré par la position de la scène)
+        # Solution hybride : setScale + setPos pour maintenir l'ancrage
+        old_scale = self.graphics_pixmap_item.scale()
         self.graphics_view.setUpdatesEnabled(False)
+        
+        # Appliquer le nouveau scale
         self.graphics_pixmap_item.setScale(self.zoom_current)
+        
+        # Corriger la position pour maintenir le centre
+        if hasattr(self, '_zoom_center'):
+            new_pos = self._zoom_center - self.graphics_pixmap_item.boundingRect().center()
+            self.graphics_pixmap_item.setPos(new_pos)
+        else:
+            # Si pas de centre stocké, centrer
+            self.graphics_view.centerOn(self.graphics_pixmap_item)
+        
         self.graphics_view.setUpdatesEnabled(True)
 
 
