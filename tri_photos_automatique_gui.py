@@ -225,10 +225,10 @@ class PhotoSorterApp(QMainWindow):
         self.watchdog_worker = None
         self.text_embeddings = None
 
-        # Variables pour le zoom avec setTransform + centerOn
+        # Variables pour le zoom avec 7 étapes EXACTES
         self.zoom_factor = 1.0
-        self.min_zoom = 0.513158  # ✅ 1.0 / (1.1^7) = 7 étapes arrière
-        self.max_zoom = 1.948717  # ✅ 1.0 * (1.1^7) = 7 étapes avant
+        self.min_zoom = 0.513158   # ✅ 1.0 / (1.1^7)
+        self.max_zoom = 1.9487171  # ✅ 1.0 * (1.1^7) = 1.9487171 (valeur exacte)
         self.zoom_step = 1.1
 
         # Variables pour le lissage
@@ -1057,6 +1057,8 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
         # Réinitialiser la transformation de l'item (toujours à 1.0)
         self.graphics_pixmap_item.setTransform(QTransform())
+        # Forcer la position à (0,0) pour éviter les décalages
+        self.graphics_pixmap_item.setPos(0, 0)
         self.zoom_factor = 1.0
         self.zoom_current = 1.0
         self.zoom_target = 1.0
@@ -1148,6 +1150,8 @@ class PhotoSorterApp(QMainWindow):
         self.zoom_target = 1.0
         self.zoom_current = 1.0
         if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item and hasattr(self, 'base_scale'):
+            # Réinitialiser la position de l'item pour éviter les décalages
+            self.graphics_pixmap_item.setPos(0, 0)
             # Réappliquer l'échelle de base
             transform = QTransform()
             transform.scale(self.base_scale, self.base_scale)
@@ -1186,7 +1190,7 @@ class PhotoSorterApp(QMainWindow):
 
 
     def load_image_preview(self, image_path):
-        """Charge une vignette de l'image (max 1000px de large) avec QImageReader"""
+        """Charge une vignette de l'image (max 1000px de large) avec QImageReader ou rawpy pour les RAW"""
         try:
             # Libérer l'ancienne image
             if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
@@ -1194,7 +1198,7 @@ class PhotoSorterApp(QMainWindow):
                 self.graphics_pixmap_item = None
             self.graphics_scene.clear()
 
-            # Charger avec QImageReader (gère RAW, JPEG, PNG)
+            # Essayer de charger avec QImageReader d'abord (JPEG, PNG, etc.)
             reader = QImageReader(image_path)
             reader.setAutoTransform(True)  # Orientation EXIF
 
@@ -1208,6 +1212,33 @@ class PhotoSorterApp(QMainWindow):
             ))
 
             qimage = reader.read()
+            
+            # Si QImageReader échoue (RAW), essayer avec rawpy
+            if qimage.isNull():
+                try:
+                    # Charger avec rawpy pour les fichiers RAW
+                    with rawpy.imread(image_path) as raw:
+                        # Convertir en numpy array
+                        thumb = raw.extract_thumb()
+                        if thumb is not None:
+                            # Si thumbnail disponible, l'utiliser
+                            qimage = QImage(
+                                thumb.data, thumb.width, thumb.height,
+                                thumb.format == rawpy.ColourSpace.sRGB
+                                and QImage.Format_RGB888 or QImage.Format_RGBA8888
+                            )
+                        else:
+                            # Sinon, convertir le raw en image
+                            rgb_data = raw.postprocess()
+                            height, width, _ = rgb_data.shape
+                            bytes_per_line = 3 * width
+                            qimage = QImage(
+                                rgb_data.data, width, height, bytes_per_line,
+                                QImage.Format_RGB888
+                            )
+                except Exception as raw_error:
+                    raise ValueError(f"Erreur de chargement RAW avec rawpy: {raw_error}")
+            
             if qimage.isNull():
                 raise ValueError(f"Format non supporté ou image corrompue : {image_path}")
 
