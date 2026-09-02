@@ -45,6 +45,19 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Sans libraw, les fichiers RAW (.CR2, .NEF, .ARW) ne pourront pas être décodés.
 
 
+# ======================
+# DÉPENDANCES POUR LES RAW
+# ======================
+# Sur Linux (Fedora/Bazzite) :
+#   sudo dnf install libraw-devel
+# Sur Linux (Arch/Manjaro) :
+#   sudo pacman -S libraw
+# Sur Windows/macOS :
+#   pip install rawpy  # (libraw est inclus dans le package wheel)
+#
+# Sans libraw, les fichiers RAW (.CR2, .NEF, .ARW) ne pourront pas être décodés.
+
+
 
 # ====================== CONFIGURATION ======================
 class Config:
@@ -462,7 +475,8 @@ class PhotoSorterApp(QMainWindow):
         # Installe un event filter pour capturer la molette dans le viewport
         self.graphics_view.viewport().installEventFilter(self)
         
-        self.graphics_pixmap_item = None
+        self.graphics_pixmap_item = QGraphicsPixmapItem()
+        self.graphics_scene.addItem(self.graphics_pixmap_item)
 
         # Boutons de zoom
         zoom_frame = QFrame()
@@ -1072,7 +1086,8 @@ class PhotoSorterApp(QMainWindow):
     def clear_image(self):
         """Efface l'image affichée"""
         self.graphics_scene.clear()
-        self.graphics_pixmap_item = None
+        self.graphics_pixmap_item = QGraphicsPixmapItem()
+        self.graphics_scene.addItem(self.graphics_pixmap_item)
 
     def load_image(self, file_path):
         """Charge une image (y compris RAW) et retourne un QPixmap."""
@@ -1193,51 +1208,24 @@ class PhotoSorterApp(QMainWindow):
 
 
     def load_image_preview(self, image_path):
-        """Charge une vignette de l'image (max 1000px de large) avec QImageReader ou rawpy pour les RAW"""
+        """Charge une image et l'affiche dans le preview."""
         try:
             # Libérer l'ancienne image
             if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
                 self.graphics_scene.removeItem(self.graphics_pixmap_item)
-                self.graphics_pixmap_item = QGraphicsPixmapItem()
-                self.graphics_scene.addItem(self.graphics_pixmap_item)  # CRUCIAL
             self.graphics_scene.clear()
-
+            
             # Charger l'image avec la fonction unifiée
             pixmap = self.load_image(image_path)
             if pixmap and not pixmap.isNull():
                 self.set_image_pixmap(pixmap)
                 self.current_image_path = image_path
-                return
             else:
                 raise ValueError(f"Impossible de charger l'image: {image_path}")
-            # Essayer de charger avec QImageReader pour les autres formats
-                reader = QImageReader(image_path)
-                reader.setAutoTransform(True)  # Orientation EXIF
-
-                # Limiter à 1000px de large
-                original_size = QImageReader(image_path).size()
-                max_width = 1000
-                scale_factor = max_width / original_size.width() if original_size.width() > max_width else 1.0
-                reader.setScaledSize(QSize(
-                    int(original_size.width() * scale_factor),
-                    int(original_size.height() * scale_factor)
-                ))
-
-                qimage = reader.read()
-                
-                if qimage.isNull():
-                    raise ValueError(f"Format non supporté ou image corrompue : {image_path}")
-
-            pixmap = QPixmap.fromImage(qimage)
-            self.set_image_pixmap(pixmap)
-            self.current_image_path = image_path
-
         except Exception as e:
-            self.log_message(f"⚠️ Erreur : {e}")
+            self.log_message(f"Erreur : {e}")
             self.clear_image()
 
-
-    # ====================== WATCHDOG ======================
     def toggle_watchdog(self, state):
         if state == Qt.Checked:
             self.start_watchdog()
