@@ -32,6 +32,19 @@ from watchdog.events import FileSystemEventHandler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# ======================
+# DÉPENDANCES POUR LES RAW
+# ======================
+# Sur Linux (Fedora/Bazzite) :
+#   sudo dnf install libraw-devel
+# Sur Linux (Arch/Manjaro) :
+#   sudo pacman -S libraw
+# Sur Windows/macOS :
+#   pip install rawpy  # (libraw est inclus dans le package wheel)
+#
+# Sans libraw, les fichiers RAW (.CR2, .NEF, .ARW) ne pourront pas être décodés.
+
+
 
 # ====================== CONFIGURATION ======================
 class Config:
@@ -1167,7 +1180,7 @@ class PhotoSorterApp(QMainWindow):
 
 
 
-    def zoom_reset(self):
+    def reset_zoom(self):
         """Réinitialise le zoom à 100%."""
         if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
             # Réinitialiser la transformation (zoom)
@@ -1185,7 +1198,8 @@ class PhotoSorterApp(QMainWindow):
             # Libérer l'ancienne image
             if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
                 self.graphics_scene.removeItem(self.graphics_pixmap_item)
-                self.graphics_pixmap_item = None
+                self.graphics_pixmap_item = QGraphicsPixmapItem()
+                self.graphics_scene.addItem(self.graphics_pixmap_item)  # CRUCIAL
             self.graphics_scene.clear()
 
             # Charger l'image avec la fonction unifiée
