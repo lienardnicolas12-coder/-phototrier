@@ -1198,49 +1198,65 @@ class PhotoSorterApp(QMainWindow):
                 self.graphics_pixmap_item = None
             self.graphics_scene.clear()
 
-            # Essayer de charger avec QImageReader d'abord (JPEG, PNG, etc.)
-            reader = QImageReader(image_path)
-            reader.setAutoTransform(True)  # Orientation EXIF
-
-            # Limiter à 1000px de large
-            original_size = QImageReader(image_path).size()
-            max_width = 1000
-            scale_factor = max_width / original_size.width() if original_size.width() > max_width else 1.0
-            reader.setScaledSize(QSize(
-                int(original_size.width() * scale_factor),
-                int(original_size.height() * scale_factor)
-            ))
-
-            qimage = reader.read()
-            
-            # Si QImageReader échoue (RAW), essayer avec rawpy
-            if qimage.isNull():
+            # Essayer de charger avec rawpy pour les fichiers RAW
+            if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
                 try:
-                    # Charger avec rawpy pour les fichiers RAW
                     with rawpy.imread(image_path) as raw:
-                        # Convertir en numpy array
-                        thumb = raw.extract_thumb()
-                        if thumb is not None:
-                            # Si thumbnail disponible, l'utiliser
-                            qimage = QImage(
-                                thumb.data, thumb.width, thumb.height,
-                                thumb.format == rawpy.ColourSpace.sRGB
-                                and QImage.Format_RGB888 or QImage.Format_RGBA8888
-                            )
+                        # Extraire la vignette si disponible
+                        if raw.has_thumb:
+                            thumb = raw.extract_thumb()
+                            # Convertir la vignette en QImage
+                            # rawpy retourne un numpy array pour la vignette
+                            if thumb.shape[2] == 3:  # RGB
+                                height, width, _ = thumb.shape
+                                bytes_per_line = 3 * width
+                                qimage = QImage(
+                                    thumb.data, width, height, bytes_per_line,
+                                    QImage.Format_RGB888
+                                )
+                            else:  # RGBA ou autre
+                                height, width, _ = thumb.shape
+                                bytes_per_line = 4 * width
+                                qimage = QImage(
+                                    thumb.data, width, height, bytes_per_line,
+                                    QImage.Format_RGBA8888
+                                )
                         else:
                             # Sinon, convertir le raw en image
                             rgb_data = raw.postprocess()
-                            height, width, _ = rgb_data.shape
-                            bytes_per_line = 3 * width
-                            qimage = QImage(
-                                rgb_data.data, width, height, bytes_per_line,
-                                QImage.Format_RGB888
-                            )
+                            height, width, channels = rgb_data.shape
+                            if channels == 3:
+                                bytes_per_line = 3 * width
+                                qimage = QImage(
+                                    rgb_data.data, width, height, bytes_per_line,
+                                    QImage.Format_RGB888
+                                )
+                            else:
+                                bytes_per_line = 4 * width
+                                qimage = QImage(
+                                    rgb_data.data, width, height, bytes_per_line,
+                                    QImage.Format_RGBA8888
+                                )
                 except Exception as raw_error:
                     raise ValueError(f"Erreur de chargement RAW avec rawpy: {raw_error}")
-            
-            if qimage.isNull():
-                raise ValueError(f"Format non supporté ou image corrompue : {image_path}")
+            else:
+                # Essayer de charger avec QImageReader pour les autres formats
+                reader = QImageReader(image_path)
+                reader.setAutoTransform(True)  # Orientation EXIF
+
+                # Limiter à 1000px de large
+                original_size = QImageReader(image_path).size()
+                max_width = 1000
+                scale_factor = max_width / original_size.width() if original_size.width() > max_width else 1.0
+                reader.setScaledSize(QSize(
+                    int(original_size.width() * scale_factor),
+                    int(original_size.height() * scale_factor)
+                ))
+
+                qimage = reader.read()
+                
+                if qimage.isNull():
+                    raise ValueError(f"Format non supporté ou image corrompue : {image_path}")
 
             pixmap = QPixmap.fromImage(qimage)
             self.set_image_pixmap(pixmap)
