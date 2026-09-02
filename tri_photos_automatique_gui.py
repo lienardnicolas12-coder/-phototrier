@@ -1069,6 +1069,56 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_scene.clear()
         self.graphics_pixmap_item = None
 
+    def load_raw_image(self, raw_path):
+        """Charge une image RAW et la convertit en QPixmap."""
+        try:
+            with rawpy.imread(raw_path) as raw:
+                # Extraire la vignette si disponible
+                if raw.has_thumb:
+                    thumb = raw.extract_thumb()
+                    # Convertir la vignette en QImage
+                    height, width, channels = thumb.shape
+                    if channels == 3:
+                        bytes_per_line = 3 * width
+                        qimage = QImage(
+                            thumb.data, width, height, bytes_per_line,
+                            QImage.Format_RGB888
+                        )
+                    else:
+                        bytes_per_line = 4 * width
+                        qimage = QImage(
+                            thumb.data, width, height, bytes_per_line,
+                            QImage.Format_RGBA8888
+                        )
+                else:
+                    # Sinon, convertir le raw en image
+                    rgb_data = raw.postprocess(
+                        use_camera_wb=True,
+                        output_color=rawpy.ColorSpace.sRGB,
+                        no_auto_bright=True,
+                        gamma=(1, 1)
+                    )
+                    height, width, channels = rgb_data.shape
+                    if channels == 3:
+                        bytes_per_line = 3 * width
+                        qimage = QImage(
+                            rgb_data.data, width, height, bytes_per_line,
+                            QImage.Format_RGB888
+                        )
+                    else:
+                        bytes_per_line = 4 * width
+                        qimage = QImage(
+                            rgb_data.data, width, height, bytes_per_line,
+                            QImage.Format_RGBA8888
+                        )
+                
+                pixmap = QPixmap.fromImage(qimage)
+                return pixmap
+        except Exception as e:
+            self.log_message(f"Erreur de chargement RAW: {e}")
+            return None
+
+
     def fit_in_view(self):
         """Adapte l'image à la taille du QGraphicsView en conservant le ratio d'aspect"""
         if not self.graphics_pixmap_item:
@@ -1200,45 +1250,13 @@ class PhotoSorterApp(QMainWindow):
 
             # Essayer de charger avec rawpy pour les fichiers RAW
             if Path(image_path).suffix.lower() in self.config.RAW_EXTENSIONS:
-                try:
-                    with rawpy.imread(image_path) as raw:
-                        # Extraire la vignette si disponible
-                        if raw.has_thumb:
-                            thumb = raw.extract_thumb()
-                            # Convertir la vignette en QImage
-                            # rawpy retourne un numpy array pour la vignette
-                            if thumb.shape[2] == 3:  # RGB
-                                height, width, _ = thumb.shape
-                                bytes_per_line = 3 * width
-                                qimage = QImage(
-                                    thumb.data, width, height, bytes_per_line,
-                                    QImage.Format_RGB888
-                                )
-                            else:  # RGBA ou autre
-                                height, width, _ = thumb.shape
-                                bytes_per_line = 4 * width
-                                qimage = QImage(
-                                    thumb.data, width, height, bytes_per_line,
-                                    QImage.Format_RGBA8888
-                                )
-                        else:
-                            # Sinon, convertir le raw en image
-                            rgb_data = raw.postprocess()
-                            height, width, channels = rgb_data.shape
-                            if channels == 3:
-                                bytes_per_line = 3 * width
-                                qimage = QImage(
-                                    rgb_data.data, width, height, bytes_per_line,
-                                    QImage.Format_RGB888
-                                )
-                            else:
-                                bytes_per_line = 4 * width
-                                qimage = QImage(
-                                    rgb_data.data, width, height, bytes_per_line,
-                                    QImage.Format_RGBA8888
-                                )
-                except Exception as raw_error:
-                    raise ValueError(f"Erreur de chargement RAW avec rawpy: {raw_error}")
+                pixmap = self.load_raw_image(image_path)
+                if pixmap and not pixmap.isNull():
+                    self.set_image_pixmap(pixmap)
+                    self.current_image_path = image_path
+                    return
+                else:
+                    raise ValueError(f"Impossible de charger l'image RAW: {image_path}")
             else:
                 # Essayer de charger avec QImageReader pour les autres formats
                 reader = QImageReader(image_path)
