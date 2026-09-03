@@ -1185,16 +1185,12 @@ class PhotoSorterApp(QMainWindow):
 
 
     def zoom_out(self):
-        """Zoom arrière avec lissage et centrage stable (7 étapes max)."""
+        """Zoom arrière avec accumulation des transformations."""
         if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-            # ✅ Calcule la cible du zoom (7 étapes arrière : 1.0 / 1.1^7 = 0.513158)
-            self.zoom_target = max(self.zoom_factor / self.zoom_step, self.min_zoom)
-            # ✅ Synchronise zoom_current avec zoom_factor pour éviter les sauts
-            self.zoom_current = self.zoom_factor
-            # ✅ Démarre le timer si ce n'est pas déjà fait
-            if not self.zoom_timer.isActive():
-                self.zoom_active = True
-                self.zoom_timer.start()
+            self.graphics_view.setUpdatesEnabled(False)
+            current_transform = self.graphics_pixmap_item.transform()
+            self.graphics_pixmap_item.setTransform(current_transform.scale(1 / 1.15, 1 / 1.15))  # ✅ Accumule le zoom
+            self.graphics_view.setUpdatesEnabled(True)
 
 
 
