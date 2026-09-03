@@ -462,7 +462,7 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setRenderHint(QPainter.Antialiasing)
         self.graphics_view.setRenderHint(QPainter.SmoothPixmapTransform)
         self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)  # Zoom centré sur la souris
-        self.graphics_view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)         # Redimensionnement centré
+        self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)         # Redimensionnement centré
         self.graphics_view.setAlignment(Qt.AlignCenter)  # Centre le contenu dans le view
         self.graphics_view.setDragMode(QGraphicsView.NoDrag)
         self.graphics_view.setMouseTracking(True)
@@ -1070,11 +1070,20 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
     def set_image_pixmap(self, pixmap):
         """Affiche une pixmap dans le QGraphicsView"""
-        self.graphics_scene.clear()
-        if self.graphics_pixmap_item:
-            self.graphics_scene.removeItem(self.graphics_pixmap_item)
+        # Vider la scène avant de recharger
+        self.clear_scene()
+        
+        # Redimensionner en vignette 200x200 en conservant les proportions
+        if isinstance(pixmap, QPixmap):
+            pixmap = pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         
         self.graphics_pixmap_item = self.graphics_scene.addPixmap(pixmap)
+        self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
+        self.graphics_pixmap_item.setTransform(QTransform())
+        self.zoom_factor = 1.0
+        self.zoom_current = 1.0
+        self.zoom_target = 1.0
+        self.reset_zoom()
         self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
         # Réinitialiser la transformation de l'item (toujours à 1.0)
         self.graphics_pixmap_item.setTransform(QTransform())
@@ -1088,6 +1097,15 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_scene.clear()
         self.graphics_pixmap_item = QGraphicsPixmapItem()
         self.graphics_scene.addItem(self.graphics_pixmap_item)
+
+    def clear_scene(self):
+        """Vide complètement la scène des items."""
+        for item in self.graphics_scene.items():
+            if item.scene() == self.graphics_scene:
+                self.graphics_scene.removeItem(item)
+        self.graphics_scene.clear()
+
+
 
     def load_image(self, file_path):
         """Charge une image (y compris RAW) et retourne un QPixmap."""
@@ -1213,10 +1231,8 @@ class PhotoSorterApp(QMainWindow):
     def load_image_preview(self, image_path):
         """Charge une image et l'affiche dans le preview."""
         try:
-            # Libérer l'ancienne image
-            if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-                self.graphics_scene.removeItem(self.graphics_pixmap_item)
-            self.graphics_scene.clear()
+            # Vider la scène avant de recharger
+            self.clear_scene()
             
             # Charger l'image avec la fonction unifiée
             pixmap = self.load_image(image_path)
