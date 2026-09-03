@@ -495,7 +495,7 @@ class PhotoSorterApp(QMainWindow):
 
         zoom_reset_btn = QPushButton("Reset Zoom")
         zoom_reset_btn.setStyleSheet("font-size: 12px;")
-        zoom_reset_btn.clicked.connect(self.zoom_reset)
+        zoom_reset_btn.clicked.connect(self.reset_zoom)
         zoom_layout.addWidget(zoom_reset_btn)
 
         zoom_layout.addStretch()
