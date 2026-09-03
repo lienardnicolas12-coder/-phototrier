@@ -1172,36 +1172,43 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setUpdatesEnabled(True)
 
     def zoom_in(self):
-        """Zoom avant avec setTransform + fitInView."""
+        """Zoom avant avec accumulation des transformations."""
         if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
             self.graphics_view.setUpdatesEnabled(False)
+            # Accumuler la transformation (NE PAS utiliser QTransform().scale)
             current_transform = self.graphics_pixmap_item.transform()
-            new_scale = current_transform.m11() * 1.15
-            self.graphics_pixmap_item.setTransform(QTransform().scale(new_scale, new_scale))
-            self.graphics_view.fitInView(self.graphics_pixmap_item, Qt.KeepAspectRatio)
+            self.graphics_pixmap_item.setTransform(current_transform.scale(1.15, 1.15))  # ✅ Zoom progressif
             self.graphics_view.setUpdatesEnabled(True)
+
+
 
 
 
     def zoom_out(self):
-        """Zoom arrière avec setTransform + fitInView."""
+        """Zoom arrière avec lissage et centrage stable (7 étapes max)."""
         if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-            self.graphics_view.setUpdatesEnabled(False)
-            current_transform = self.graphics_pixmap_item.transform()
-            new_scale = current_transform.m11() * (1 / 1.15)
-            self.graphics_pixmap_item.setTransform(QTransform().scale(new_scale, new_scale))
-            self.graphics_view.fitInView(self.graphics_pixmap_item, Qt.KeepAspectRatio)
-            self.graphics_view.setUpdatesEnabled(True)
+            # ✅ Calcule la cible du zoom (7 étapes arrière : 1.0 / 1.1^7 = 0.513158)
+            self.zoom_target = max(self.zoom_factor / self.zoom_step, self.min_zoom)
+            # ✅ Synchronise zoom_current avec zoom_factor pour éviter les sauts
+            self.zoom_current = self.zoom_factor
+            # ✅ Démarre le timer si ce n'est pas déjà fait
+            if not self.zoom_timer.isActive():
+                self.zoom_active = True
+                self.zoom_timer.start()
+
+
 
 
 
     def reset_zoom(self):
-        """Réinitialise le zoom à 100%."""
+        """Réinitialise le zoom à 100% et recentre sans décalage."""
         if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-            # Réinitialiser la transformation (zoom)
+            self.graphics_view.setUpdatesEnabled(False)
+            # Réinitialiser la transformation (zoom à 100%)
             self.graphics_pixmap_item.setTransform(QTransform())
-            # Recentrer la vue sur l'item
-            self.graphics_view.fitInView(self.graphics_pixmap_item, Qt.KeepAspectRatio)
+            # Recentrer la vue sur l'item (SANS fitInView pour éviter les décalages)
+            self.graphics_view.centerOn(self.graphics_pixmap_item)  # ✅ Recentrage propre
+            self.graphics_view.setUpdatesEnabled(True)
 
 
 
@@ -1446,17 +1453,19 @@ class PhotoSorterApp(QMainWindow):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        """Gère le déplacement de la souris avec le bouton du milieu enfoncé."""
-        if self.middle_button_pressed and hasattr(self, 'graphics_view'):
-            # Calculer le delta de déplacement
+        """Déplace l'image avec la souris (bouton du milieu enfoncé)."""
+        if self.middle_button_pressed and hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
             delta = event.localPos() - self.last_mouse_pos
             self.last_mouse_pos = event.localPos()
-            # Déplacer la vue (pas l'item !) pour éviter les conflits
-            current_scene_pos = self.graphics_view.mapToScene(event.localPos().toPoint())
-            self.graphics_view.centerOn(current_scene_pos)
+            # Déplacer l'ITEM (pas la vue !) pour éviter les conflits avec fitInView/centerOn
+            self.graphics_pixmap_item.moveBy(delta.x(), delta.y())  # ✅ Déplacement fluide
             event.accept()
         else:
             super().mouseMoveEvent(event)
+
+
+
+
 
     def mouseReleaseEvent(self, event):
         """Gère le relâchement du bouton de la souris."""
