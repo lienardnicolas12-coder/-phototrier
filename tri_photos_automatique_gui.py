@@ -1180,24 +1180,20 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setUpdatesEnabled(True)
 
     def zoom_in(self):
-        """Zoom avant avec setTransform + centerOn."""
-        if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
-            new_zoom = self.zoom_current * self.zoom_step
-            if new_zoom <= self.max_zoom:
-                self.zoom_target = new_zoom
-                if not self.zoom_timer.isActive():
-                    self.zoom_timer.start()
-                    self.zoom_active = True
+        """Zoom avant avec accumulation des transformations (7 étapes)."""
+        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
+            self.graphics_view.setUpdatesEnabled(False)
+            current_transform = self.graphics_pixmap_item.transform()
+            self.graphics_pixmap_item.setTransform(current_transform.scale(1.15, 1.15))  # ✅ Zoom avant fluide
+            self.graphics_view.setUpdatesEnabled(True)
 
     def zoom_out(self):
-        """Zoom arrière avec setTransform + centerOn."""
-        if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
-            new_zoom = self.zoom_current / self.zoom_step
-            if new_zoom >= self.min_zoom:
-                self.zoom_target = new_zoom
-                if not self.zoom_timer.isActive():
-                    self.zoom_timer.start()
-                    self.zoom_active = True
+        """Zoom arrière avec accumulation des transformations (7 étapes)."""
+        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
+            self.graphics_view.setUpdatesEnabled(False)
+            current_transform = self.graphics_pixmap_item.transform()
+            self.graphics_pixmap_item.setTransform(current_transform.scale(1 / 1.15, 1 / 1.15))  # ✅ Zoom arrière fluide
+            self.graphics_view.setUpdatesEnabled(True)
 
     def zoom_reset(self):
         """Réinitialise le zoom à 100% (base_scale)."""
