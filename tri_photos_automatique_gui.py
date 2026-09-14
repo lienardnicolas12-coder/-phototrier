@@ -251,11 +251,11 @@ class PhotoSorterApp(QMainWindow):
         self.watchdog_worker = None
         self.text_embeddings = None
 
-        # Variables pour le zoom avec 7 étapes EXACTES
+        # Variables pour le zoom avec 4 étapes (plus robuste)
         self.zoom_factor = 1.0
-        self.min_zoom = 0.513158   # ✅ 1.0 / (1.1^7)
-        self.max_zoom = 1.9487171  # ✅ 1.0 * (1.1^7) = 1.9487171 (valeur exacte)
-        self.zoom_step = 1.1
+        self.zoom_step = 1.5  # ✅ 4 étapes : 1.0 → 1.5 → 2.25 → 3.375
+        self.min_zoom = 1.0 / (self.zoom_step ** 4)  # ~0.197
+        self.max_zoom = self.zoom_step ** 4  # ~5.06
 
         # Variables pour le lissage
         self.zoom_timer = QTimer(self)
@@ -467,15 +467,15 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setScene(self.graphics_scene)
         self.graphics_view.setRenderHint(QPainter.Antialiasing)
         self.graphics_view.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)  # Zoom centré sur la souris
-        self.graphics_view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)         # Redimensionnement centré
+        self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)  # Zoom centré sur le viewport
+        self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.graphics_view.setAlignment(Qt.AlignCenter)  # Centre le contenu dans le view
         self.graphics_view.setDragMode(QGraphicsView.NoDrag)
         self.graphics_view.setMouseTracking(True)
         self.graphics_view.viewport().setMouseTracking(True)
         
-        # Variables pour le déplacement avec la molette
-        self.middle_button_pressed = False
+        # Variables pour le déplacement avec le bouton droit
+        self.right_button_pressed = False
         self.last_mouse_pos = QPointF()
         
         # Installe un event filter pour capturer la molette dans le viewport
@@ -1013,7 +1013,7 @@ class PhotoSorterApp(QMainWindow):
             for root, _, files in os.walk(folder):
                 for file in files:
                     filepath = Path(root) / file
-                    if filepath.suffix.lower() in self.config.IMAGE_EXTENSIONS | self.config.RAW_EXTENSIONS:
+                    if filepath.suffix.lower() in (self.config.IMAGE_EXTENSIONS | self.config.RAW_EXTENSIONS):
                         all_images.append(str(filepath))
 
             if not all_images:
@@ -1076,11 +1076,16 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
     def set_image_pixmap(self, pixmap):
         """Affiche une pixmap dans le QGraphicsView"""
-        self.graphics_scene.clear()
-        if self.graphics_pixmap_item:
+        # ✅ Supprimer l'ancien item s'il existe
+        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
             self.graphics_scene.removeItem(self.graphics_pixmap_item)
         
+        self.graphics_scene.clear()
+        
         self.graphics_pixmap_item = self.graphics_scene.addPixmap(pixmap)
+        # ✅ Vérifier que l'item a été ajouté
+        if self.graphics_pixmap_item is None:
+            return
         self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
         # Réinitialiser la transformation de l'item (toujours à 1.0)
         self.graphics_pixmap_item.setTransform(QTransform())
@@ -1094,26 +1099,29 @@ class PhotoSorterApp(QMainWindow):
     def clear_image(self):
         """Efface l'image affichée"""
         self.graphics_scene.clear()
-        self.graphics_pixmap_item = QGraphicsPixmapItem()
-        self.graphics_scene.addItem(self.graphics_pixmap_item)
+        self.graphics_pixmap_item = None
 
     def load_image(self, file_path):
         """Charge une image (y compris RAW) et retourne un QPixmap."""
         try:
             # Vérifier si c'est un fichier RAW
-            if file_path.lower().endswith(('.cr2', '.nef', '.arw', '.dng', '.raw', '.nef', '.arw', '.rw2', '.pef', '.raf', '.x3f')):
+            if file_path.lower().endswith(('.cr2', '.nef', '.arw', '.dng', '.raw', '.rw2', '.pef', '.raf', '.x3f')):
                 with rawpy.imread(file_path) as raw:
                     # Convertir en RGB 8 bits
                     rgb_array = raw.postprocess()
                     height, width = rgb_array.shape[:2]
+                    # ✅ Faire une copie du tableau pour éviter les problèmes de mémoire
+                    rgb_copy = rgb_array.copy()
                     # Créer une QImage à partir du tableau numpy
                     qimage = QImage(
-                        rgb_array.data,
+                        rgb_copy.ctypes.data,
                         width,
                         height,
                         3 * width,  # bytes_per_line (3 canaux RGB)
                         QImage.Format_RGB888
                     )
+                    if qimage.isNull():
+                        return None
                     return QPixmap.fromImage(qimage)
             else:
                 # Charger les images classiques avec QPixmap
@@ -1159,12 +1167,22 @@ class PhotoSorterApp(QMainWindow):
         height_ratio = viewport_height / image_height
         self.base_scale = min(width_ratio, height_ratio)
         
-        # Réinitialiser la transformation de l'item (toujours à 1.0)
-        self.graphics_pixmap_item.setTransform(QTransform())
+        # ✅ Vérifier base_scale (éviter division par zéro)
+        if self.base_scale <= 0:
+            self.base_scale = 1.0
         
-        # Appliquer l'échelle d'adaptation sur la VUE
-        transform = QTransform()
-        transform.scale(self.base_scale, self.base_scale)
+        # ✅ Vérifier que graphics_pixmap_item existe
+        if self.graphics_pixmap_item is None:
+            self.graphics_view.setUpdatesEnabled(True)
+            return
+        
+        # ✅ Réinitialiser VUE + ITEM
+        self.graphics_view.setTransform(QTransform())
+        self.graphics_pixmap_item.setTransform(QTransform())
+        self.graphics_pixmap_item.setPos(0, 0)
+        
+        # ✅ Appliquer le scale sur la VUE (pas sur l'item)
+        transform = QTransform().scale(self.base_scale, self.base_scale)
         self.graphics_view.setTransform(transform)
         
         # Le zoom de la vue est à base_scale (100% = base_scale)
@@ -1172,15 +1190,14 @@ class PhotoSorterApp(QMainWindow):
         self.zoom_current = 1.0
         self.zoom_target = 1.0
         
-        # Centrer l'image avec le centre du viewport
-        viewport_center = self.graphics_view.viewport().rect().center()
-        self.graphics_view.centerOn(self.graphics_view.mapToScene(viewport_center))
+        # ✅ Centrer sur l'item (qui est à (0,0))
+        self.graphics_view.centerOn(self.graphics_pixmap_item)
         
         # Réactiver les mises à jour
         self.graphics_view.setUpdatesEnabled(True)
 
     def zoom_in(self):
-        """Zoom avant avec setTransform + centerOn."""
+        """Zoom avant sur la VUE avec 4 étapes."""
         if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
             new_zoom = self.zoom_current * self.zoom_step
             if new_zoom <= self.max_zoom:
@@ -1190,30 +1207,30 @@ class PhotoSorterApp(QMainWindow):
                     self.zoom_active = True
 
     def zoom_out(self):
-        """Zoom arrière avec setTransform + centerOn."""
+        """Zoom arrière sur la VUE avec 4 étapes."""
         if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
             new_zoom = self.zoom_current / self.zoom_step
-            if new_zoom >= self.min_zoom:
+            if new_zoom >= self.min_zoom - 0.0001:
                 self.zoom_target = new_zoom
                 if not self.zoom_timer.isActive():
                     self.zoom_timer.start()
                     self.zoom_active = True
 
     def zoom_reset(self):
-        """Réinitialise le zoom à 100% (base_scale)."""
+        """Réinitialise le zoom à 100% (base_scale) et recentre parfaitement."""
         self.zoom_factor = 1.0
         self.zoom_target = 1.0
         self.zoom_current = 1.0
         if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item and hasattr(self, 'base_scale'):
-            # Réinitialiser la position de l'item pour éviter les décalages
+            # ✅ Réinitialiser la position de l'item
             self.graphics_pixmap_item.setPos(0, 0)
-            # Réappliquer l'échelle de base
-            transform = QTransform()
-            transform.scale(self.base_scale, self.base_scale)
+            # ✅ Réinitialiser la transformation de la vue
+            self.graphics_view.setTransform(QTransform())
+            # ✅ Appliquer l'échelle de base
+            transform = QTransform().scale(self.base_scale, self.base_scale)
             self.graphics_view.setTransform(transform)
-            # Centrage final avec le centre du viewport
-            viewport_center = self.graphics_view.viewport().rect().center()
-            self.graphics_view.centerOn(self.graphics_view.mapToScene(viewport_center))
+            # ✅ Centrer sur l'item (qui est à (0,0))
+            self.graphics_view.centerOn(self.graphics_pixmap_item)
 
     def _apply_smooth_zoom(self):
         """Applique le zoom SANS tremblements (centerOn UNIQUEMENT à la fin)."""
@@ -1233,13 +1250,10 @@ class PhotoSorterApp(QMainWindow):
             transform = QTransform().scale(self.zoom_current, self.zoom_current)
             self.graphics_view.setTransform(transform)
 
-        # ✅ Recentrage UNIQUEMENT à la fin du zoom
+        # ✅ Pas de recentrage pendant le zoom (AnchorUnderMouse gère le centrage)
         if abs(self.zoom_target - self.zoom_current) < 0.001:
             self.zoom_current = self.zoom_target
             self.zoom_factor = self.zoom_target
-            # Recentrage FINAL (1 seule fois)
-            viewport_center = self.graphics_view.viewport().rect().center()
-            self.graphics_view.centerOn(self.graphics_view.mapToScene(viewport_center))
             self.zoom_timer.stop()
             self.zoom_active = False
 
@@ -1247,14 +1261,9 @@ class PhotoSorterApp(QMainWindow):
     def load_image_preview(self, image_path):
         """Charge une image et l'affiche dans le preview."""
         try:
-            # Libérer l'ancienne image
-            if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-                self.graphics_scene.removeItem(self.graphics_pixmap_item)
-                self.graphics_scene.clear()
-
             # Charger l'image avec la fonction unifiée
-                pixmap = self.load_image(image_path)
-            if pixmap and not pixmap.isNull():
+            pixmap = self.load_image(image_path)
+            if pixmap is not None and not pixmap.isNull():
                 self.set_image_pixmap(pixmap)
                 self.current_image_path = image_path
             else:
@@ -1474,9 +1483,9 @@ class PhotoSorterApp(QMainWindow):
 
 
     def mousePressEvent(self, event):
-        """Gère le clic de la souris pour le déplacement."""
-        if event.button() == Qt.MiddleButton:
-            self.middle_button_pressed = True
+        """Gère le clic de la souris pour le déplacement (bouton droit)."""
+        if event.button() == Qt.RightButton:
+            self.right_button_pressed = True
             self.last_mouse_pos = event.localPos()
             self.graphics_view.setCursor(Qt.ClosedHandCursor)
             event.accept()
@@ -1484,8 +1493,8 @@ class PhotoSorterApp(QMainWindow):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        """Gère le déplacement de la souris avec le bouton du milieu enfoncé."""
-        if self.middle_button_pressed and hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
+        """Gère le déplacement de la souris avec le bouton droit enfoncé."""
+        if self.right_button_pressed and hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
             delta = event.localPos() - self.last_mouse_pos
             self.last_mouse_pos = event.localPos()
             
@@ -1498,30 +1507,46 @@ class PhotoSorterApp(QMainWindow):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        """Gère le relâchement du bouton de la souris."""
-
-        if event.button() == Qt.MiddleButton:
-            self.middle_button_pressed = False
+        """Gère le relâchement du bouton droit de la souris."""
+        if event.button() == Qt.RightButton:
+            self.right_button_pressed = False
             self.graphics_view.setCursor(Qt.ArrowCursor)
             event.accept()
         else:
             super().mouseReleaseEvent(event)
 
     def eventFilter(self, obj, event):
-        """Filtre les événements pour le viewport du QGraphicsView."""
+        """Filtre les événements pour le viewport du QGraphicsView (molette = zoom, bouton droit = déplacement)."""
         if obj == self.graphics_view.viewport():
-            # Désactiver définitivement la molette
+            # ✅ MOLETTE : Zoom avec la molette
             if event.type() == QEvent.Type.Wheel:
-                event.ignore()
+                delta = event.angleDelta().y()
+                if delta > 0:
+                    self.zoom_in()
+                else:
+                    self.zoom_out()
                 return True
-            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MiddleButton:
-                self.mousePressEvent(event)
+            # ✅ BOUTON DROIT : Déplacement
+            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.RightButton:
+                self.right_button_pressed = True
+                self.last_mouse_pos = event.localPos()
+                self.graphics_view.setCursor(Qt.ClosedHandCursor)
+                event.accept()
                 return True
-            elif event.type() == QEvent.Type.MouseMove and self.middle_button_pressed:
-                self.mouseMoveEvent(event)
+            elif event.type() == QEvent.Type.MouseMove and self.right_button_pressed:
+                if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
+                    delta = event.localPos() - self.last_mouse_pos
+                    self.last_mouse_pos = event.localPos()
+                    
+                    self.graphics_view.setUpdatesEnabled(False)
+                    self.graphics_pixmap_item.moveBy(delta.x(), delta.y())
+                    self.graphics_view.setUpdatesEnabled(True)
+                event.accept()
                 return True
-            elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MiddleButton:
-                self.mouseReleaseEvent(event)
+            elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.RightButton:
+                self.right_button_pressed = False
+                self.graphics_view.setCursor(Qt.ArrowCursor)
+                event.accept()
                 return True
 
         return super().eventFilter(obj, event)
