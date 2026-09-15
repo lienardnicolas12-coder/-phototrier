@@ -451,11 +451,17 @@ class PhotoSorterApp(QMainWindow):
         self.entry_image_path = QLineEdit()
         self.entry_image_path.setVisible(False)
 
+        # ========== ZONE CENTRALE : Viewport + Panneau miniatures ==========
+        content_layout = QHBoxLayout()
+
+        # --- Panneau gauche : Viewport + boutons zoom ---
+        left_panel = QVBoxLayout()
+
         # Conteneur FIXE pour l'image (800x600)
         image_container = QFrame()
         image_container.setFixedSize(800, 600)
         image_container.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
-        layout.addWidget(image_container)
+        left_panel.addWidget(image_container)
 
         # Configuration du QGraphicsView avec taille FIXE
         self.graphics_view = QGraphicsView(image_container)
@@ -467,9 +473,9 @@ class PhotoSorterApp(QMainWindow):
         self.graphics_view.setScene(self.graphics_scene)
         self.graphics_view.setRenderHint(QPainter.Antialiasing)
         self.graphics_view.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)  # Zoom centré sur le viewport
+        self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
         self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
-        self.graphics_view.setAlignment(Qt.AlignCenter)  # Centre le contenu dans le view
+        self.graphics_view.setAlignment(Qt.Alignment(0))
         self.graphics_view.setDragMode(QGraphicsView.NoDrag)
         self.graphics_view.setMouseTracking(True)
         self.graphics_view.viewport().setMouseTracking(True)
@@ -494,18 +500,40 @@ class PhotoSorterApp(QMainWindow):
         zoom_in_btn.clicked.connect(self.zoom_in)
         zoom_layout.addWidget(zoom_in_btn)
 
-        zoom_out_btn = QPushButton("- Zoom")
-        zoom_out_btn.setStyleSheet("font-size: 12px;")
-        zoom_out_btn.clicked.connect(self.zoom_out)
-        zoom_layout.addWidget(zoom_out_btn)
-
         zoom_reset_btn = QPushButton("Reset Zoom")
         zoom_reset_btn.setStyleSheet("font-size: 12px;")
         zoom_reset_btn.clicked.connect(self.zoom_reset)
         zoom_layout.addWidget(zoom_reset_btn)
 
         zoom_layout.addStretch()
-        layout.addWidget(zoom_frame)
+        left_panel.addWidget(zoom_frame)
+
+        content_layout.addLayout(left_panel)
+
+        # --- Panneau droit : Miniatures ---
+        thumb_group = QGroupBox("Miniatures")
+        thumb_layout = QVBoxLayout(thumb_group)
+        self.search_results = QListWidget()
+        self.search_results.setViewMode(QListWidget.IconMode)
+        self.search_results.setIconSize(QSize(120, 120))
+        self.search_results.setResizeMode(QListWidget.Adjust)
+        self.search_results.setMovement(QListWidget.Static)
+        self.search_results.setWrapping(False)
+        self.search_results.setFlow(QListWidget.TopToBottom)
+        self.search_results.setUniformItemSizes(True)
+        self.search_results.setSpacing(4)
+        self.search_results.setFixedWidth(170)
+        self.search_results.setStyleSheet("""
+            QListWidget { background-color: #1e1e1e; border: 1px solid #444; border-radius: 4px; }
+            QListWidget::item { border-radius: 4px; padding: 4px; }
+            QListWidget::item:selected { background-color: #509cfb; }
+        """)
+        self.search_results.itemClicked.connect(self.load_image_from_results)
+        thumb_layout.addWidget(self.search_results)
+        thumb_group.setFixedWidth(180)
+        content_layout.addWidget(thumb_group)
+
+        layout.addLayout(content_layout)
 
         # Tags actuels
         self.current_tags_label = QLabel("Tags actuels : Aucun")
@@ -536,11 +564,6 @@ class PhotoSorterApp(QMainWindow):
         search_layout.addWidget(search_btn)
         search_group.setLayout(search_layout)
         layout.addWidget(search_group)
-
-        # Résultats de recherche
-        self.search_results = QListWidget()
-        self.search_results.itemDoubleClicked.connect(self.load_image_from_results)
-        layout.addWidget(self.search_results)
     def setup_tf_tab(self):
         self.tf_tab = QWidget()
         self.tabs.addTab(self.tf_tab, "\ud83e\udd16 Modèle TensorFlow")
@@ -1004,8 +1027,35 @@ class PhotoSorterApp(QMainWindow):
             self.folder_path_input.setText(folder)
             self.scan_folder_for_tags(folder)
 
+    def create_thumbnail(self, image_path, size=120):
+        """Cree une miniature QPixmap a partir d'un chemin d'image."""
+        try:
+            if image_path.lower().endswith(tuple(self.config.RAW_EXTENSIONS)):
+                with rawpy.imread(image_path) as raw:
+                    rgb_array = raw.postprocess(half_size=True)
+                    height, width = rgb_array.shape[:2]
+                    rgb_copy = rgb_array.copy()
+                    qimage = QImage(
+                        rgb_copy.ctypes.data,
+                        width, height,
+                        3 * width,
+                        QImage.Format_RGB888
+                    )
+                    if qimage.isNull():
+                        return None
+                    pixmap = QPixmap.fromImage(qimage)
+            else:
+                pixmap = QPixmap(image_path)
+
+            if pixmap.isNull():
+                return None
+            return pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        except Exception as e:
+            logging.debug(f"Erreur miniature {image_path}: {e}")
+            return None
+
     def scan_folder_for_tags(self, folder):
-        """Scanne un dossier et affiche les images avec leurs tags"""
+        """Scanne un dossier et affiche les miniatures des images"""
         self.search_results.clear()
         all_images = []
 
@@ -1031,11 +1081,17 @@ class PhotoSorterApp(QMainWindow):
                 all_images = results
 
             for img_path in all_images:
-                tags = self.tag_manager.get_tags(img_path)
-                tag_str = f" [Tags: {', '.join(tags)}]" if tags else "[Aucun tag]"
-                self.search_results.addItem(f"{os.path.basename(img_path)}{tag_str} ({img_path})")
+                thumbnail = self.create_thumbnail(img_path)
+                if thumbnail is not None:
+                    item = QListWidgetItem()
+                    item.setIcon(QIcon(thumbnail))
+                    item.setData(Qt.UserRole, img_path)
+                    tags = self.tag_manager.get_tags(img_path)
+                    tag_str = f" [{', '.join(tags)}]" if tags else ""
+                    item.setToolTip(f"{os.path.basename(img_path)}{tag_str}")
+                    self.search_results.addItem(item)
 
-            self.log_message(f"\u2705 {len(all_images)} image(s) trouvée(s) dans {folder}.")
+            self.log_message(f"\u2705 {self.search_results.count()} image(s) affichée(s).")
         except Exception as e:
             self.log_message(f"\u274c Erreur lors du scan du dossier: {e}")
 
@@ -1047,11 +1103,7 @@ class PhotoSorterApp(QMainWindow):
             return
 
         item = selected_items[0]
-        text = item.text()
-        if " (" in text and ")" in text:
-            image_path = text.split(" (")[1][:-1]  # Extraire le chemin entre parenthèses
-        else:
-            image_path = text
+        image_path = item.data(Qt.UserRole)
 
         new_tag = self.new_tag_input.text().strip()
         if not new_tag:
@@ -1060,9 +1112,6 @@ class PhotoSorterApp(QMainWindow):
 
         self.tag_manager.add_tag(image_path, new_tag)
         self.new_tag_input.clear()
-        self.log_message(f"✅ Tag '{new_tag}' ajouté à {os.path.basename(image_path)}")
-        self.load_image_tags(image_path)
-
         self.log_message(f"\u2705 Tag '{new_tag}' ajouté à {os.path.basename(image_path)}")
         self.load_image_tags(image_path)
 
@@ -1133,68 +1182,37 @@ class PhotoSorterApp(QMainWindow):
 
 
     def fit_in_view(self):
-        """Adapte l'image à la taille du QGraphicsView en conservant le ratio d'aspect"""
+        """Adapte l'image au viewport avec centrage parfait."""
         if not self.graphics_pixmap_item:
             return
         
-        # Désactiver temporairement les mises à jour pour éviter les artefacts
-        self.graphics_view.setUpdatesEnabled(False)
-        
-        # Obtenir la taille du viewport (800x600)
-        viewport_width = self.graphics_view.viewport().width()
-        viewport_height = self.graphics_view.viewport().height()
-        
-        if viewport_width <= 0 or viewport_height <= 0:
-            self.graphics_view.setUpdatesEnabled(True)
-            return
-        
-        # Obtenir la taille de l'image
-        pixmap = self.graphics_pixmap_item.pixmap()
-        if pixmap.isNull():
-            self.graphics_view.setUpdatesEnabled(True)
-            return
-        
-        image_width = pixmap.width()
-        image_height = pixmap.height()
-        
-        if image_width <= 0 or image_height <= 0:
-            self.graphics_view.setUpdatesEnabled(True)
-            return
-        
-        # Calculer le facteur d'échelle pour adapter l'image au viewport
-        # en conservant le ratio d'aspect (comme object-fit: contain)
-        width_ratio = viewport_width / image_width
-        height_ratio = viewport_height / image_height
-        self.base_scale = min(width_ratio, height_ratio)
-        
-        # ✅ Vérifier base_scale (éviter division par zéro)
-        if self.base_scale <= 0:
-            self.base_scale = 1.0
-        
-        # ✅ Vérifier que graphics_pixmap_item existe
-        if self.graphics_pixmap_item is None:
-            self.graphics_view.setUpdatesEnabled(True)
-            return
-        
-        # ✅ Réinitialiser VUE + ITEM
+        # ✅ 1. Réinitialiser VUE + ITEM
         self.graphics_view.setTransform(QTransform())
         self.graphics_pixmap_item.setTransform(QTransform())
         self.graphics_pixmap_item.setPos(0, 0)
         
-        # ✅ Appliquer le scale sur la VUE (pas sur l'item)
-        transform = QTransform().scale(self.base_scale, self.base_scale)
-        self.graphics_view.setTransform(transform)
+        # ✅ 2. Définir le sceneRect à la taille exacte de l'image
+        #    (la vue "oublie" l'ancienne scène qui faussait fitInView)
+        item_rect = self.graphics_pixmap_item.boundingRect()
+        self.graphics_scene.setSceneRect(item_rect)
+        
+        # ✅ 3. Réinitialiser les scrollbars au centre avant fitInView
+        #    (évite que la position de défilement précédente influe sur le centrage)
+        self.graphics_view.horizontalScrollBar().setValue(0)
+        self.graphics_view.verticalScrollBar().setValue(0)
+        
+        # ✅ 4. fitInView : Qt calcule l'échelle ET le centrage en une seule opération
+        self.graphics_view.fitInView(item_rect, Qt.KeepAspectRatio)
+        
+        # ✅ 5. Récupérer le base_scale réel calculé par Qt
+        self.base_scale = self.graphics_view.transform().m11()
+        if self.base_scale <= 0:
+            self.base_scale = 1.0
         
         # Le zoom de la vue est à base_scale (100% = base_scale)
         self.zoom_factor = 1.0
         self.zoom_current = 1.0
         self.zoom_target = 1.0
-        
-        # ✅ Centrer sur l'item (qui est à (0,0))
-        self.graphics_view.centerOn(self.graphics_pixmap_item)
-        
-        # Réactiver les mises à jour
-        self.graphics_view.setUpdatesEnabled(True)
 
     def zoom_in(self):
         """Zoom avant sur la VUE avec 4 étapes."""
@@ -1217,20 +1235,13 @@ class PhotoSorterApp(QMainWindow):
                     self.zoom_active = True
 
     def zoom_reset(self):
-        """Réinitialise le zoom à 100% (base_scale) et recentre parfaitement."""
+        """Réinitialise le zoom : refait fitInView pour un centrage parfait."""
         self.zoom_factor = 1.0
         self.zoom_target = 1.0
         self.zoom_current = 1.0
-        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item and hasattr(self, 'base_scale'):
-            # ✅ Réinitialiser la position de l'item
-            self.graphics_pixmap_item.setPos(0, 0)
-            # ✅ Réinitialiser la transformation de la vue
-            self.graphics_view.setTransform(QTransform())
-            # ✅ Appliquer l'échelle de base
-            transform = QTransform().scale(self.base_scale, self.base_scale)
-            self.graphics_view.setTransform(transform)
-            # ✅ Centrer sur l'item (qui est à (0,0))
-            self.graphics_view.centerOn(self.graphics_pixmap_item)
+        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
+            # ✅ Revenir à fitInView (centrage + échelle parfaits)
+            self.fit_in_view()
 
     def _apply_smooth_zoom(self):
         """Applique le zoom SANS tremblements (centerOn UNIQUEMENT à la fin)."""
@@ -1462,20 +1473,27 @@ class PhotoSorterApp(QMainWindow):
         all_results = self.tag_manager.get_images_by_tag(tag)
         if not all_results:
             self.search_results.clear()
-            self.search_results.addItem("❌ Aucun résultat trouvé.")
+            self.log_message("Aucun résultat trouvé.")
             return
 
         self.search_results.clear()
         for img_path in all_results:
-            tags = self.tag_manager.get_tags(img_path)
-            tag_str = f" [Tags: {', '.join(tags)}]" if tags else "[Aucun tag]"
-            self.search_results.addItem(f"{os.path.basename(img_path)}{tag_str} ({img_path})")
+            thumbnail = self.create_thumbnail(img_path)
+            if thumbnail is not None:
+                item = QListWidgetItem()
+                item.setIcon(QIcon(thumbnail))
+                item.setData(Qt.UserRole, img_path)
+                tags = self.tag_manager.get_tags(img_path)
+                tag_str = f" [{', '.join(tags)}]" if tags else ""
+                item.setToolTip(f"{os.path.basename(img_path)}{tag_str}")
+                self.search_results.addItem(item)
+
+        self.log_message(f"\u2705 {self.search_results.count()} image(s) trouvée(s) pour le tag '{tag}'.")
 
     def load_image_from_results(self, item):
-        """Charge une image depuis les résultats de recherche"""
-        text = item.text()
-        if " (" in text and ")" in text:
-            image_path = text.split(" (")[1][:-1]  # Extraire le chemin entre parenthèses
+        """Charge une image depuis les résultats de recherche (clic sur miniature)"""
+        image_path = item.data(Qt.UserRole)
+        if image_path:
             self.load_image_preview(image_path)
             self.load_image_tags(image_path)
 
@@ -1518,13 +1536,12 @@ class PhotoSorterApp(QMainWindow):
     def eventFilter(self, obj, event):
         """Filtre les événements pour le viewport du QGraphicsView (molette = zoom, bouton droit = déplacement)."""
         if obj == self.graphics_view.viewport():
-            # ✅ MOLETTE : Zoom avec la molette
+            # ✅ MOLETTE : Zoom avec la molette (uniquement zoom avant)
             if event.type() == QEvent.Type.Wheel:
                 delta = event.angleDelta().y()
                 if delta > 0:
                     self.zoom_in()
-                else:
-                    self.zoom_out()
+                # Molette bas : ignorée (pas de zoom arrière)
                 return True
             # ✅ BOUTON DROIT : Déplacement
             elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.RightButton:
