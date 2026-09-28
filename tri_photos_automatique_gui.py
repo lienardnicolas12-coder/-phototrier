@@ -13,20 +13,19 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QMessageBox, QPushButton,
     QRadioButton, QSizePolicy, QTabWidget, QTextEdit, QVBoxLayout,
     QHBoxLayout, QWidget, QMainWindow, QScrollArea, QGraphicsPixmapItem,
-    QGraphicsItem, QSpacerItem, QButtonGroup, QToolButton
+    QGraphicsItem, QSpacerItem, QButtonGroup, QToolButton, QShortcut
 )
 from PyQt5.QtGui import (
     QPixmap, QImage, QPainter, QIcon, QFont, QColor,
-    QPalette, QBrush, QPen, QCursor, QTransform, QImageReader
+    QPalette, QBrush, QPen, QCursor, QTransform, QImageReader, QKeySequence
 )
 from PyQt5.QtCore import (
     Qt, QPoint, QPointF, QSize, QRect, QRectF, pyqtSignal,
-    QThread, QObject, QTimer, QEvent, QMargins, QSizeF
+    QThread, QObject, QTimer, QEvent, QMargins, QSizeF, QDateTime
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from sentence_transformers import SentenceTransformer, util
 import torch
-import tensorflow as tf
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -61,13 +60,15 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # ====================== CONFIGURATION ======================
 class Config:
-    # Utiliser des chemins relatifs ou basés sur le répertoire personnel
+    # Chemins fixes (jamais modifies par le storage_path)
     BASE_DIR = Path(__file__).parent
+    CONFIG_FILE = BASE_DIR / "config.json"
+    TAGS_FILE = BASE_DIR / "tags.json"
+
+    # Chemins dynamiques (modifies par le storage_path)
     DOSSIER_A_TRIER = BASE_DIR / "a_trier"
     DOSSIER_TRIES = BASE_DIR / "tries"
     MODEL_SAVE_PATH = BASE_DIR / "models"
-    TAGS_FILE = BASE_DIR / "tags.json"
-    CONFIG_FILE = BASE_DIR / "config.json"
 
     # Catégories et descriptions OPTIMISÉES
     CATEGORIES = {
@@ -179,17 +180,34 @@ class TagManager:
 
     def _save_tags(self):
         try:
+            serializable = {k: list(v) for k, v in self.tags.items()}
             with open(self.tags_file, 'w', encoding='utf-8') as f:
-                json.dump(self.tags, f, indent=2, ensure_ascii=False)
+                json.dump(serializable, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logging.error(f"Erreur de sauvegarde des tags: {e}")
 
     def add_tag(self, image_path, tag):
         image_path = str(image_path)
+        # Reutiliser l'orthographe d'un tag existant (casse ignoree) pour eviter les doublons
+        for known in self.get_all_tags():
+            if known.lower() == tag.lower():
+                tag = known
+                break
         if image_path not in self.tags:
             self.tags[image_path] = set()
         self.tags[image_path].add(tag)
         self._save_tags()
+
+    def migrate_tags(self, old_path, new_path):
+        """Transfere les tags vers le nouveau chemin d'une image deplacee"""
+        old_path = str(old_path)
+        new_path = str(new_path)
+        if old_path == new_path:
+            return
+        if old_path in self.tags:
+            old_tags = self.tags.pop(old_path)
+            self.tags.setdefault(new_path, set()).update(old_tags)
+            self._save_tags()
 
     def remove_tag(self, image_path, tag):
         image_path = str(image_path)
@@ -247,7 +265,6 @@ class PhotoSorterApp(QMainWindow):
         self.config = Config()
         self.tag_manager = TagManager(self.config.TAGS_FILE)
         self.model_clip = None
-        self.model_tf = None
         self.watchdog_worker = None
         self.text_embeddings = None
 
@@ -277,8 +294,6 @@ class PhotoSorterApp(QMainWindow):
         self.search_results = None
         self.graphics_view = None
         self.current_tags_label = None
-        self.tf_model_path = None
-        self.tf_status = None
         self.folder_path_input = None
 
         # Attributs pour les paramètres
@@ -293,6 +308,10 @@ class PhotoSorterApp(QMainWindow):
         self.init_ui()
         self.load_models()
 
+        # Raccourci de debug : F12 enregistre un dump complet de l'interface
+        self.dump_shortcut = QShortcut(QKeySequence("F12"), self)
+        self.dump_shortcut.activated.connect(self.dump_ui_state)
+
     # ====================== CHARGEMENT DE LA CONFIGURATION ======================
     def load_saved_config(self):
         """Charge la configuration sauvegardée (dossier de stockage et catégories)"""
@@ -306,12 +325,9 @@ class PhotoSorterApp(QMainWindow):
                 self.config.DOSSIER_A_TRIER = custom_path / "a_trier"
                 self.config.DOSSIER_TRIES = custom_path / "tries"
                 self.config.MODEL_SAVE_PATH = custom_path / "models"
-                self.config.TAGS_FILE = custom_path / "tags.json"
-                self.config.CONFIG_FILE = custom_path / "config.json"
+                # TAGS_FILE et CONFIG_FILE restent dans le dossier racine du projet (chemins fixes)
                 # Recreate directories with new path
                 Config.ensure_directories()
-                # Update tag manager with new path
-                self.tag_manager = TagManager(self.config.TAGS_FILE)
         
         # Charger les catégories personnalisées
         if 'categories' in saved_config:
@@ -359,76 +375,143 @@ class PhotoSorterApp(QMainWindow):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        self.setup_auto_tab()
+        self.setup_tri_tab()
         self.setup_tags_tab()
-        self.setup_tf_tab()
-        self.setup_publish_tab()
-        self.setup_settings_tab()
+        self.refresh_tags_list()
 
-    def setup_auto_tab(self):
-        self.auto_tab = QWidget()
-        self.tabs.addTab(self.auto_tab, "\ud83d\udcf7 Tri Automatique")
-        layout = QVBoxLayout(self.auto_tab)
-        layout.setSpacing(15)
+    def setup_tri_tab(self):
+        """Onglet fusionne : Tri Automatique + Parametres"""
+        self.tri_tab = QWidget()
+        self.tabs.addTab(self.tri_tab, "\ud83d\udcf7 Tri & Parametres")
+        main_layout = QVBoxLayout(self.tri_tab)
+        main_layout.setSpacing(10)
 
-        # Dossier à trier
+        # ========== SECTION HAUTE : 2 COLONNES ==========
+        top_layout = QHBoxLayout()
+
+        # --- COLONNE GAUCHE : Dossiers + Modele + Tri ---
+        left_box = QVBoxLayout()
+
+        # Dossier de stockage
+        storage_group = QGroupBox("\ud83d\udcc2 Dossier de stockage")
+        storage_layout = QVBoxLayout()
+        storage_path_frame = QFrame()
+        storage_path_layout = QHBoxLayout(storage_path_frame)
+        storage_path_layout.addWidget(QLabel("Dossier:"))
+        self.storage_path_input = QLineEdit(str(self.config.BASE_DIR))
+        self.storage_path_input.setMinimumWidth(300)
+        storage_path_layout.addWidget(self.storage_path_input)
+        browse_storage_btn = QPushButton("Changer...")
+        browse_storage_btn.clicked.connect(self.browse_storage_path)
+        storage_path_layout.addWidget(browse_storage_btn)
+        storage_layout.addWidget(storage_path_frame)
+        storage_group.setLayout(storage_layout)
+        left_box.addWidget(storage_group)
+
+        # Dossier a trier
         source_frame = QFrame()
         source_layout = QHBoxLayout(source_frame)
-        source_layout.addWidget(QLabel("Dossier à trier:"))
+        source_layout.addWidget(QLabel("A trier:"))
         self.entry_source = QLineEdit(str(self.config.DOSSIER_A_TRIER))
-        self.entry_source.setMinimumWidth(400)
+        self.entry_source.setMinimumWidth(300)
         source_layout.addWidget(self.entry_source)
         browse_source_btn = QPushButton("Parcourir")
         browse_source_btn.clicked.connect(self.browse_source)
         source_layout.addWidget(browse_source_btn)
-        layout.addWidget(source_frame)
+        left_box.addWidget(source_frame)
 
         # Dossier de sortie
         output_frame = QFrame()
         output_layout = QHBoxLayout(output_frame)
-        output_layout.addWidget(QLabel("Dossier de sortie:"))
+        output_layout.addWidget(QLabel("Sortie:"))
         self.entry_output = QLineEdit(str(self.config.DOSSIER_TRIES))
-        self.entry_output.setMinimumWidth(400)
+        self.entry_output.setMinimumWidth(300)
         output_layout.addWidget(self.entry_output)
         browse_output_btn = QPushButton("Parcourir")
         browse_output_btn.clicked.connect(self.browse_output)
         output_layout.addWidget(browse_output_btn)
-        layout.addWidget(output_frame)
+        left_box.addWidget(output_frame)
 
-        # Options modèle
-        options_group = QGroupBox("Modèle de classification")
+        # Modele de classification
+        options_group = QGroupBox("Modele de classification")
         options_layout = QVBoxLayout()
-        self.radio_clip = QRadioButton("CLIP (recommandé)")
+        self.radio_clip = QRadioButton("CLIP (actif)")
         self.radio_clip.setChecked(True)
-        self.radio_tf = QRadioButton("TensorFlow Personnalisé")
+        self.radio_clip.setEnabled(False)
         options_layout.addWidget(self.radio_clip)
-        options_layout.addWidget(self.radio_tf)
         options_group.setLayout(options_layout)
-        layout.addWidget(options_group)
+        left_box.addWidget(options_group)
 
         # Surveillance
         watch_group = QGroupBox("Surveillance")
         watch_layout = QHBoxLayout()
-        self.check_watch = QCheckBox("Démarrer la surveillance")
+        self.check_watch = QCheckBox("Demarrer la surveillance")
         self.check_watch.stateChanged.connect(self.toggle_watchdog)
         watch_layout.addWidget(self.check_watch)
         watch_group.setLayout(watch_layout)
-        layout.addWidget(watch_group)
+        left_box.addWidget(watch_group)
 
         # Bouton Trier maintenant
         sort_btn = QPushButton("\ud83d\udcc1 Trier maintenant")
         sort_btn.setStyleSheet("font-weight: bold;")
         sort_btn.clicked.connect(self.trier_dossier_maintenant)
-        layout.addWidget(sort_btn)
+        left_box.addWidget(sort_btn)
 
-        # Journal
+        left_box.addStretch()
+        top_layout.addLayout(left_box)
+
+        # --- COLONNE DROITE : Categories ---
+        right_box = QVBoxLayout()
+
+        categories_group = QGroupBox("\ud83c\udff7\ufe0f Categoriees de tri")
+        categories_layout = QVBoxLayout()
+
+        self.categories_list = QListWidget()
+        self.categories_list.setMinimumHeight(200)
+        self.refresh_categories_list()
+        categories_layout.addWidget(self.categories_list)
+
+        buttons_frame = QFrame()
+        buttons_layout = QHBoxLayout(buttons_frame)
+        add_category_btn = QPushButton("\u2795 Ajouter")
+        add_category_btn.clicked.connect(self.add_category)
+        buttons_layout.addWidget(add_category_btn)
+        edit_category_btn = QPushButton("\u270f Modifier")
+        edit_category_btn.clicked.connect(self.edit_category)
+        buttons_layout.addWidget(edit_category_btn)
+        delete_category_btn = QPushButton("\u274c Supprimer")
+        delete_category_btn.clicked.connect(self.delete_category)
+        buttons_layout.addWidget(delete_category_btn)
+        categories_layout.addWidget(buttons_frame)
+
+        actions_frame = QFrame()
+        actions_layout = QHBoxLayout(actions_frame)
+        save_btn = QPushButton("\ud83d\udcbe Enregistrer")
+        save_btn.setStyleSheet("font-weight: bold; background-color: #28a745;")
+        save_btn.clicked.connect(self.save_settings)
+        actions_layout.addWidget(save_btn)
+        categories_layout.addWidget(actions_frame)
+
+        self.settings_status = QLabel("")
+        self.settings_status.setStyleSheet("color: #28a745;")
+        categories_layout.addWidget(self.settings_status)
+
+        categories_group.setLayout(categories_layout)
+        right_box.addWidget(categories_group)
+        right_box.addStretch()
+        top_layout.addLayout(right_box)
+
+        main_layout.addLayout(top_layout)
+
+        # ========== JOURNAL (pleine largeur) ==========
         log_group = QGroupBox("Journal")
         log_layout = QVBoxLayout()
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(150)
         log_layout.addWidget(self.log_text)
         log_group.setLayout(log_layout)
-        layout.addWidget(log_group)
+        main_layout.addWidget(log_group)
 
     def setup_tags_tab(self):
         self.tags_tab = QWidget()
@@ -451,7 +534,7 @@ class PhotoSorterApp(QMainWindow):
         self.entry_image_path = QLineEdit()
         self.entry_image_path.setVisible(False)
 
-        # ========== ZONE CENTRALE : Viewport + Panneau miniatures ==========
+        # ========== ZONE CENTRALE : Viewport + Panneau miniatures + Liste tags ==========
         content_layout = QHBoxLayout()
 
         # --- Panneau gauche : Viewport + boutons zoom ---
@@ -533,6 +616,21 @@ class PhotoSorterApp(QMainWindow):
         thumb_group.setFixedWidth(180)
         content_layout.addWidget(thumb_group)
 
+        # --- Panneau far right : Liste des tags ---
+        tags_list_group = QGroupBox("Tags")
+        tags_list_layout = QVBoxLayout(tags_list_group)
+        self.tags_list_widget = QListWidget()
+        self.tags_list_widget.setFixedWidth(150)
+        self.tags_list_widget.setStyleSheet("""
+            QListWidget { background-color: #1e1e1e; border: 1px solid #509cfb; border-radius: 4px; color: white; }
+            QListWidget::item { padding: 6px; }
+            QListWidget::item:selected { background-color: #509cfb; }
+        """)
+        self.tags_list_widget.itemClicked.connect(self.on_tag_selected)
+        tags_list_layout.addWidget(self.tags_list_widget)
+        tags_list_group.setFixedWidth(160)
+        content_layout.addWidget(tags_list_group)
+
         layout.addLayout(content_layout)
 
         # Tags actuels
@@ -541,7 +639,7 @@ class PhotoSorterApp(QMainWindow):
         layout.addWidget(self.current_tags_label)
 
         # Ajouter un tag
-        tag_group = QGroupBox("Ajouter un tag \u00e0 cette image")
+        tag_group = QGroupBox("Ajouter un tag a cette image")
         tag_layout = QHBoxLayout()
         self.new_tag_input = QLineEdit()
         self.new_tag_input.setPlaceholderText("Ex: cheval, paysage...")
@@ -552,138 +650,9 @@ class PhotoSorterApp(QMainWindow):
         tag_group.setLayout(tag_layout)
         layout.addWidget(tag_group)
 
-        # Recherche par tag
-        search_group = QGroupBox("Rechercher des images par tag")
-        search_layout = QHBoxLayout()
+        # Champ cache pour compatibilite (tag_search n'est plus dans l'UI mais reference dans scan_folder)
         self.tag_search = QLineEdit()
-        self.tag_search.setPlaceholderText("Ex: cheval, paysage...")
-        self.tag_search.setMinimumWidth(300)
-        search_layout.addWidget(self.tag_search)
-        search_btn = QPushButton("\ud83d\udd0d Rechercher")
-        search_btn.clicked.connect(self.search_by_tag)
-        search_layout.addWidget(search_btn)
-        search_group.setLayout(search_layout)
-        layout.addWidget(search_group)
-    def setup_tf_tab(self):
-        self.tf_tab = QWidget()
-        self.tabs.addTab(self.tf_tab, "\ud83e\udd16 Modèle TensorFlow")
-        layout = QVBoxLayout(self.tf_tab)
-
-        # Sélection du modèle
-        model_frame = QFrame()
-        model_layout = QHBoxLayout(model_frame)
-        self.tf_model_path = QLineEdit()
-        self.tf_model_path.setMinimumWidth(400)
-        model_layout.addWidget(self.tf_model_path)
-        browse_model_btn = QPushButton("Parcourir...")
-        browse_model_btn.clicked.connect(self.browse_tf_model)
-        model_layout.addWidget(browse_model_btn)
-        layout.addWidget(model_frame)
-
-        # Bouton pour télécharger un modèle par défaut
-        self.download_btn = QPushButton("\u2753 Comment obtenir un modèle ?")
-# self.download_btn.clicked.connect(self.download_default_model)  # Désactivé : méthode non implémentée
-        self.download_btn.setEnabled(False)  # Désactive le bouton pour éviter l'erreur
-        layout.addWidget(self.download_btn)
-
-        # Bouton charger
-        load_model_btn = QPushButton("\ud83d\udcc1 Charger le modèle TensorFlow")
-        load_model_btn.clicked.connect(self.load_tf_model)
-        layout.addWidget(load_model_btn)
-
-        # Statut
-        self.tf_status = QLabel("Aucun modèle TensorFlow chargé")
-        layout.addWidget(self.tf_status)
-
-    def setup_publish_tab(self):
-        self.publish_tab = QWidget()
-        self.tabs.addTab(self.publish_tab, "\ud83d\udce4 À Publier")
-        layout = QVBoxLayout(self.publish_tab)
-        layout.addWidget(QLabel("Les photos triées sont disponibles dans le dossier de sortie sélectionné."))
-        layout.addWidget(QLabel("Utilise le bouton 'Parcourir' dans l'onglet 'Tri Automatique' pour changer le dossier."))
-
-    def setup_settings_tab(self):
-        """Onglet Paramètres pour gérer le dossier de stockage et les catégories"""
-        self.settings_tab = QWidget()
-        self.tabs.addTab(self.settings_tab, "\u2699\ufe0f Paramètres")
-        layout = QVBoxLayout(self.settings_tab)
-        layout.setSpacing(15)
-
-        # ========== DOSSIER DE STOCKAGE ==========
-        storage_group = QGroupBox("\u2139 DOSSIER DE STOCKAGE")
-        storage_layout = QVBoxLayout()
-        
-        storage_path_frame = QFrame()
-        storage_path_layout = QHBoxLayout(storage_path_frame)
-        storage_path_layout.addWidget(QLabel("Dossier actuel:"))
-        self.storage_path_input = QLineEdit(str(self.config.BASE_DIR))
-        self.storage_path_input.setMinimumWidth(400)
-        storage_path_layout.addWidget(self.storage_path_input)
-        
-        browse_storage_btn = QPushButton("Changer de dossier...")
-        browse_storage_btn.clicked.connect(self.browse_storage_path)
-        storage_path_layout.addWidget(browse_storage_btn)
-        
-        storage_layout.addWidget(storage_path_frame)
-        storage_layout.addWidget(QLabel(f"Dossier à trier: {self.config.DOSSIER_A_TRIER}"))
-        storage_layout.addWidget(QLabel(f"Dossier triés: {self.config.DOSSIER_TRIES}"))
-        storage_group.setLayout(storage_layout)
-        layout.addWidget(storage_group)
-
-        # ========== CATÉGORIES ==========
-        categories_group = QGroupBox("\u2139 CATÉGORIES")
-        categories_layout = QVBoxLayout()
-        
-        # Liste des catégories
-        self.categories_list = QListWidget()
-        self.categories_list.setMinimumHeight(200)
-        self.refresh_categories_list()
-        categories_layout.addWidget(self.categories_list)
-        
-        # Boutons pour gérer les catégories
-        buttons_frame = QFrame()
-        buttons_layout = QHBoxLayout(buttons_frame)
-        
-        add_category_btn = QPushButton("\u2795 AJOUTER UNE CATÉGORIE")
-        add_category_btn.clicked.connect(self.add_category)
-        buttons_layout.addWidget(add_category_btn)
-        
-        edit_category_btn = QPushButton("\u270f Modifier")
-        edit_category_btn.clicked.connect(self.edit_category)
-        buttons_layout.addWidget(edit_category_btn)
-        
-        delete_category_btn = QPushButton("\u274c Supprimer")
-        delete_category_btn.clicked.connect(self.delete_category)
-        buttons_layout.addWidget(delete_category_btn)
-        
-        categories_layout.addWidget(buttons_frame)
-        categories_group.setLayout(categories_layout)
-        layout.addWidget(categories_group)
-
-        # ========== BOUTONS D'ACTION ==========
-        actions_frame = QFrame()
-        actions_layout = QHBoxLayout(actions_frame)
-        
-        save_btn = QPushButton("\ud83d\udcbe Enregistrer")
-        save_btn.setStyleSheet("font-weight: bold; background-color: #28a745;")
-        save_btn.clicked.connect(self.save_settings)
-        actions_layout.addWidget(save_btn)
-        
-        import_btn = QPushButton("\ud83d\udcc1 Importer")
-        import_btn.clicked.connect(self.import_categories)
-        actions_layout.addWidget(import_btn)
-        
-        export_btn = QPushButton("\ud83d\udce4 Exporter")
-        export_btn.clicked.connect(self.export_categories)
-        actions_layout.addWidget(export_btn)
-        
-        layout.addWidget(actions_frame)
-        
-        # Statut
-        self.settings_status = QLabel("")
-        self.settings_status.setStyleSheet("color: #28a745;")
-        layout.addWidget(self.settings_status)
-
+        self.tag_search.setVisible(False)
     def refresh_categories_list(self):
         """Rafraîchit la liste des catégories dans l'interface"""
         self.categories_list.clear()
@@ -701,19 +670,14 @@ class PhotoSorterApp(QMainWindow):
             self.storage_path_input.setText(folder)
             new_base_dir = Path(folder)
             
-            # Mettre à jour les chemins
+            # Mettre à jour les chemins (TAGS_FILE et CONFIG_FILE restent fixes)
             self.config.BASE_DIR = new_base_dir
             self.config.DOSSIER_A_TRIER = new_base_dir / "a_trier"
             self.config.DOSSIER_TRIES = new_base_dir / "tries"
             self.config.MODEL_SAVE_PATH = new_base_dir / "models"
-            self.config.TAGS_FILE = new_base_dir / "tags.json"
-            self.config.CONFIG_FILE = new_base_dir / "config.json"
             
             # Créer les répertoires
             Config.ensure_directories()
-            
-            # Mettre à jour le tag manager
-            self.tag_manager = TagManager(self.config.TAGS_FILE)
             
             # Mettre à jour l'interface
             self.entry_source.setText(str(self.config.DOSSIER_A_TRIER))
@@ -848,14 +812,10 @@ class PhotoSorterApp(QMainWindow):
                 self.config.DOSSIER_A_TRIER = new_base_dir / "a_trier"
                 self.config.DOSSIER_TRIES = new_base_dir / "tries"
                 self.config.MODEL_SAVE_PATH = new_base_dir / "models"
-                self.config.TAGS_FILE = new_base_dir / "tags.json"
-                self.config.CONFIG_FILE = new_base_dir / "config.json"
+                # TAGS_FILE et CONFIG_FILE restent fixes (dossier racine du projet)
                 
                 # Créer les répertoires
                 Config.ensure_directories()
-                
-                # Mettre à jour le tag manager
-                self.tag_manager = TagManager(self.config.TAGS_FILE)
                 
                 # Mettre à jour l'interface
                 self.entry_source.setText(str(self.config.DOSSIER_A_TRIER))
@@ -869,55 +829,6 @@ class PhotoSorterApp(QMainWindow):
         else:
             self.settings_status.setText("\u274c Erreur lors de l'enregistrement")
             QMessageBox.critical(self, "Erreur", "Impossible d'enregistrer les paramètres!")
-
-    def import_categories(self):
-        """Importe des catégories depuis un fichier JSON"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Importer des catégories", str(self.config.BASE_DIR),
-            "Fichiers JSON (*.json);;Tous les fichiers (*)"
-        )
-        
-        if file_path:
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    imported_categories = json.load(f)
-                
-                if isinstance(imported_categories, dict):
-                    # Fusionner avec les catégories existantes
-                    for name, desc in imported_categories.items():
-                        self.config.CATEGORIES[name] = desc
-                    
-                    self.refresh_categories_list()
-                    self.settings_status.setText(f"\u2705 {len(imported_categories)} catégories importées")
-                    self.log_message(f"Catégories importées depuis {file_path}")
-                    QMessageBox.information(self, "Succès", f"{len(imported_categories)} catégories importées avec succès!")
-                else:
-                    QMessageBox.warning(self, "Erreur", "Le fichier ne contient pas un dictionnaire de catégories valide!")
-            except Exception as e:
-                QMessageBox.critical(self, "Erreur", f"Impossible d'importer le fichier:\n{e}")
-                self.log_message(f"Erreur d'import: {e}")
-
-    def export_categories(self):
-        """Exporte les catégories vers un fichier JSON"""
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Exporter des catégories", str(self.config.BASE_DIR),
-            "Fichiers JSON (*.json);;Tous les fichiers (*)"
-        )
-        
-        if file_path:
-            if not file_path.endswith('.json'):
-                file_path += '.json'
-            
-            try:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(self.config.CATEGORIES, f, indent=2, ensure_ascii=False)
-                
-                self.settings_status.setText(f"\u2705 Catégories exportées vers {file_path}")
-                self.log_message(f"Catégories exportées vers {file_path}")
-                QMessageBox.information(self, "Succès", f"Catégories exportées avec succès vers:\n{file_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Erreur", f"Impossible d'exporter le fichier:\n{e}")
-                self.log_message(f"Erreur d'export: {e}")
 
     # ====================== CHARGEMENT DES MODÈLES ======================
     def load_models(self):
@@ -961,32 +872,6 @@ class PhotoSorterApp(QMainWindow):
                 "Essaie avec un modèle plus léger (all-MiniLM-L6-v2) si le problème persiste."
             )
 
-    def load_tf_model(self):
-        """Charge un modèle TensorFlow personnalisé"""
-        path = self.tf_model_path.text()
-        if not path:
-            QMessageBox.warning(self, "Erreur", "Aucun fichier de modèle sélectionné.")
-            return
-
-        try:
-            # Essayer de charger comme SavedModel (dossier)
-            if os.path.isdir(path):
-                self.model_tf = tf.keras.models.load_model(path)
-            # Ou comme fichier .h5/.keras
-            else:
-                self.model_tf = tf.keras.models.load_model(path)
-            self.tf_status.setText(f"\u2705 Modèle chargé : {os.path.basename(path)}")
-            self.log_message(f"Modèle TensorFlow chargé : {path}")
-        except Exception as e:
-            self.tf_status.setText(f"\u274c Erreur : {e}")
-            self.log_message(f"Échec du chargement du modèle TF : {e}")
-            QMessageBox.critical(
-                self, "Erreur",
-                f"Échec du chargement du modèle TensorFlow :\n{e}\n\n"
-                "Assurez-vous que le fichier est un modèle Keras valide (.h5 ou .keras) ou un dossier SavedModel.\n\n"
-                "Si tu as un fichier 'saved_model.pb', sélectionne le DOSSIER parent (ex: 'models') et non le fichier."
-            )
-
     # ====================== NAVIGATION ======================
     def browse_source(self):
         folder = QFileDialog.getExistingDirectory(
@@ -1006,17 +891,6 @@ class PhotoSorterApp(QMainWindow):
             self.config.DOSSIER_TRIES = Path(folder)
             self.log_message(f"Dossier de sortie : {folder}")
 
-    def browse_tf_model(self):
-        # Permettre de sélectionner un DOSSIER (pour SavedModel) ou un FICHIER (.h5)
-        file_or_dir = QFileDialog.getExistingDirectory(self, "Sélectionner un modèle TensorFlow", str(self.config.MODEL_SAVE_PATH))
-        if not file_or_dir:
-            file_or_dir, _ = QFileDialog.getOpenFileName(
-                self, "Sélectionner un modèle TensorFlow", str(self.config.MODEL_SAVE_PATH),
-                "Modèles (*.h5 *.keras);;Tous les fichiers (*)"
-            )
-        if file_or_dir:
-            self.tf_model_path.setText(file_or_dir)
-
 
     def browse_folder_for_tags(self):
         """Parcourir un dossier pour chercher des images taguées"""
@@ -1028,24 +902,31 @@ class PhotoSorterApp(QMainWindow):
             self.scan_folder_for_tags(folder)
 
     def create_thumbnail(self, image_path, size=120):
-        """Cree une miniature QPixmap a partir d'un chemin d'image."""
+        """Cree une miniature QPixmap a partir d'un chemin d'image.
+        Utilise PIL pour generer un JPEG en memoire -> loadFromData force une copie complete.
+       """
         try:
             if image_path.lower().endswith(tuple(self.config.RAW_EXTENSIONS)):
                 with rawpy.imread(image_path) as raw:
                     rgb_array = raw.postprocess(half_size=True)
-                    height, width = rgb_array.shape[:2]
-                    rgb_copy = rgb_array.copy()
-                    qimage = QImage(
-                        rgb_copy.ctypes.data,
-                        width, height,
-                        3 * width,
-                        QImage.Format_RGB888
-                    )
-                    if qimage.isNull():
-                        return None
-                    pixmap = QPixmap.fromImage(qimage)
+                    pil_img = Image.fromarray(rgb_array)
             else:
-                pixmap = QPixmap(image_path)
+                pil_img = Image.open(image_path)
+                pil_img = pil_img.convert('RGB')
+
+            # Redimensionner avec PIL (preserve le ratio)
+            pil_img.thumbnail((size, size), Image.Resampling.LANCZOS)
+
+            # Convertir en JPEG en memoire -> loadFromData force une copie complete
+            import io
+            buffer = io.BytesIO()
+            pil_img.save(buffer, format='JPEG', quality=85)
+            buffer.seek(0)
+            img_data = buffer.getvalue()
+
+            # loadFromData fait une copie complete -> pas de probleme de garbage collection
+            pixmap = QPixmap()
+            pixmap.loadFromData(img_data)
 
             if pixmap.isNull():
                 return None
@@ -1096,10 +977,10 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"\u274c Erreur lors du scan du dossier: {e}")
 
     def add_tag_to_image(self):
-        """Ajoute un tag à l'image actuellement sélectionnée dans les résultats"""
+        """Ajoute un tag a l'image actuellement selectionnee dans les resultats"""
         selected_items = self.search_results.selectedItems()
         if not selected_items:
-            QMessageBox.warning(self, "Erreur", "Aucune image sélectionnée dans les résultats !")
+            QMessageBox.warning(self, "Erreur", "Aucune image selectionnee dans les resultats !")
             return
 
         item = selected_items[0]
@@ -1112,8 +993,56 @@ class PhotoSorterApp(QMainWindow):
 
         self.tag_manager.add_tag(image_path, new_tag)
         self.new_tag_input.clear()
-        self.log_message(f"\u2705 Tag '{new_tag}' ajouté à {os.path.basename(image_path)}")
+        self.log_message(f"\u2705 Tag '{new_tag}' ajoute a {os.path.basename(image_path)}")
         self.load_image_tags(image_path)
+        self.refresh_tags_list()
+
+    def refresh_tags_list(self):
+        """Rafraichit la liste des tags avec le nombre d'images par tag"""
+        self.tags_list_widget.clear()
+        all_tags = self.tag_manager.get_all_tags()
+        for tag in all_tags:
+            count = len([p for p in self.tag_manager.get_images_by_tag(tag) if os.path.exists(p)])
+            item = QListWidgetItem(f"{tag} ({count})")
+            item.setData(Qt.UserRole, tag)
+            self.tags_list_widget.addItem(item)
+
+    def on_tag_selected(self, item):
+        """Affiche les miniatures des images correspondant au tag clique"""
+        tag = item.data(Qt.UserRole)
+        if not tag:
+            return
+        self.display_images_by_tag(tag)
+
+    def display_images_by_tag(self, tag):
+        """Affiche les miniatures des images pour un tag donne"""
+        all_results = self.tag_manager.get_images_by_tag(tag)
+        self.search_results.clear()
+        if not all_results:
+            self.log_message(f"Aucune image trouvee pour le tag '{tag}'.")
+            return
+
+        found_count = 0
+        missing_count = 0
+        for img_path in all_results:
+            if not os.path.exists(img_path):
+                missing_count += 1
+                continue
+            item = QListWidgetItem()
+            thumbnail = self.create_thumbnail(img_path)
+            if thumbnail is not None:
+                item.setIcon(QIcon(thumbnail))
+            found_count += 1
+            item.setData(Qt.UserRole, img_path)
+            tags = self.tag_manager.get_tags(img_path)
+            tag_str = f" [{', '.join(tags)}]" if tags else ""
+            item.setToolTip(f"{os.path.basename(img_path)}{tag_str}")
+            self.search_results.addItem(item)
+
+        msg = f"\u2705 {found_count} image(s) pour le tag '{tag}'."
+        if missing_count > 0:
+            msg += f" ({missing_count} fichier(s) manquant(s))"
+        self.log_message(msg)
 
     def load_image_tags(self, image_path):
         """Charge les tags d'une image"""
@@ -1357,32 +1286,6 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"\u26a0\ufe0f Erreur de classification CLIP pour {chemin_image}: {e}")
             return "autre"
 
-    def classer_image_tf(self, chemin_image):
-        """Classifie une image avec TensorFlow"""
-        try:
-            if chemin_image.lower().endswith(tuple(self.config.RAW_EXTENSIONS)):
-                image = self.raw_to_pil(chemin_image)
-                if image is None:
-                    return "autre"
-            else:
-                try:
-                    image = Image.open(chemin_image)
-                except Exception as e:
-                    return "autre"
-
-            if max(image.size) > 224:
-                image = image.resize((224, 224))
-            img_array = np.array(image) / 255.0
-            if img_array.shape[-1] == 4:
-                img_array = img_array[:, :, :3]
-            img_array = np.expand_dims(img_array, axis=0)
-            predictions = self.model_tf.predict(img_array, verbose=0)
-            categorie = list(self.config.CATEGORIES.keys())[np.argmax(predictions[0])]
-            return categorie
-        except Exception as e:
-            self.log_message(f"\u26a0\ufe0f Erreur de classification TF pour {chemin_image}: {e}")
-            return "autre"
-
     def deplacer_image_et_metadonnees(self, chemin_source, categorie):
         """Déplace une image et ses métadonnées"""
         try:
@@ -1406,6 +1309,9 @@ class PhotoSorterApp(QMainWindow):
 
             shutil.move(chemin_source, chemin_dest)
 
+            # Migrer les tags vers le nouveau chemin (evite les entrees fantomes)
+            self.tag_manager.migrate_tags(chemin_source, chemin_dest)
+
             base_name = os.path.splitext(os.path.basename(chemin_source))[0]
             dossier_source = os.path.dirname(chemin_source)
             
@@ -1422,13 +1328,9 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"\u26a0\ufe0f Impossible de déplacer {chemin_source}: {e}")
 
     def classer_et_deplacer(self, chemin_image):
-        """Classifie et déplace une image"""
+        """Classifie et deplace une image (CLIP uniquement)"""
         try:
-            use_tf = self.radio_tf.isChecked() and self.model_tf is not None
-            if use_tf:
-                categorie = self.classer_image_tf(chemin_image)
-            else:
-                categorie = self.classer_image_clip(chemin_image)
+            categorie = self.classer_image_clip(chemin_image)
             self.deplacer_image_et_metadonnees(chemin_image, categorie)
         except Exception as e:
             self.log_message(f"\u26a0\ufe0f Erreur avec {chemin_image}: {e}")
@@ -1464,31 +1366,10 @@ class PhotoSorterApp(QMainWindow):
 
 
     def search_by_tag(self):
-        """Recherche des images par tag (autonome, sans dépendre du dossier)"""
+        """Recherche des images par tag (utilise par scan_folder, delegue vers display_images_by_tag)"""
         tag = self.tag_search.text().strip()
-        if not tag:
-            QMessageBox.warning(self, "Erreur", "Aucun tag saisi !")
-            return
-
-        all_results = self.tag_manager.get_images_by_tag(tag)
-        if not all_results:
-            self.search_results.clear()
-            self.log_message("Aucun résultat trouvé.")
-            return
-
-        self.search_results.clear()
-        for img_path in all_results:
-            thumbnail = self.create_thumbnail(img_path)
-            if thumbnail is not None:
-                item = QListWidgetItem()
-                item.setIcon(QIcon(thumbnail))
-                item.setData(Qt.UserRole, img_path)
-                tags = self.tag_manager.get_tags(img_path)
-                tag_str = f" [{', '.join(tags)}]" if tags else ""
-                item.setToolTip(f"{os.path.basename(img_path)}{tag_str}")
-                self.search_results.addItem(item)
-
-        self.log_message(f"\u2705 {self.search_results.count()} image(s) trouvée(s) pour le tag '{tag}'.")
+        if tag:
+            self.display_images_by_tag(tag)
 
     def load_image_from_results(self, item):
         """Charge une image depuis les résultats de recherche (clic sur miniature)"""
@@ -1567,6 +1448,94 @@ class PhotoSorterApp(QMainWindow):
                 return True
 
         return super().eventFilter(obj, event)
+
+    # ====================== DUMP UI (DEBUG) ======================
+    def _widget_text(self, widget):
+        """Retourne le texte utile d'un widget pour le dump de debug"""
+        try:
+            if isinstance(widget, (QLabel, QPushButton, QCheckBox, QRadioButton, QGroupBox)):
+                return widget.text()
+            if isinstance(widget, QLineEdit):
+                return widget.text()
+            if isinstance(widget, QTextEdit):
+                return widget.toPlainText()
+            if isinstance(widget, QTabWidget):
+                return f"{widget.count()} onglet(s), courant: {widget.tabText(widget.currentIndex())}"
+            if isinstance(widget, QListWidget):
+                sel = widget.selectedItems()
+                sel_txt = sel[0].text() if sel else ""
+                return f"{widget.count()} item(s), selection: '{sel_txt}'"
+        except Exception:
+            pass
+        return ""
+
+    def dump_ui_state(self):
+        """Enregistre un dump complet de l'interface dans debug_ui/ (raccourci F12)"""
+        try:
+            timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_HHmmss")
+            dump_dir = Path(__file__).parent / "debug_ui"
+            dump_dir.mkdir(exist_ok=True)
+
+            lines = []
+            lines.append(f"=== DUMP UI {timestamp} ===")
+            lines.append(f"Fenetre: {self.windowTitle()} pos=({self.x()}, {self.y()}) taille=({self.width()}x{self.height()})")
+            lines.append(f"Etat fenetre: {'maximisee' if self.isMaximized() else 'normale'}")
+
+            lines.append("")
+            lines.append("--- ARBORESCENCE DES WIDGETS (pos relative a la fenetre) ---")
+            for widget in [self] + self.findChildren(QWidget):
+                top_left = widget.mapTo(self, QPoint(0, 0))
+                info = f"[{widget.metaObject().className()}]"
+                if widget.objectName():
+                    info += f" nom='{widget.objectName()}'"
+                info += f" pos=({top_left.x()}, {top_left.y()}) taille=({widget.width()}x{widget.height()})"
+                if not widget.isVisible():
+                    info += " INVISIBLE"
+                text = self._widget_text(widget)
+                if text:
+                    text_short = " ".join(text.split())
+                    if len(text_short) > 120:
+                        text_short = text_short[:117] + "..."
+                    info += f" texte='{text_short}'"
+                lines.append(info)
+
+            lines.append("")
+            lines.append("--- ETAT INTERNE ---")
+            lines.append(f"Image courante: {self.current_image_path}")
+            lines.append(f"Zoom: factor={self.zoom_factor} current={self.zoom_current} target={self.zoom_target} base_scale={getattr(self, 'base_scale', None)}")
+            if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
+                r = self.graphics_pixmap_item.boundingRect()
+                lines.append(f"Pixmap: pos=({self.graphics_pixmap_item.x():.1f}, {self.graphics_pixmap_item.y():.1f}) taille=({r.width():.0f}x{r.height():.0f})")
+            else:
+                lines.append("Pixmap: aucun")
+            lines.append(f"BASE_DIR: {self.config.BASE_DIR}")
+            lines.append(f"Dossier a trier: {self.config.DOSSIER_A_TRIER}")
+            lines.append(f"Dossier de sortie: {self.config.DOSSIER_TRIES}")
+            lines.append(f"Surveillance active: {self.watchdog_worker is not None}")
+            lines.append(f"Modele CLIP charge: {self.model_clip is not None}")
+            lines.append(f"Categories: {list(self.config.CATEGORIES.keys())}")
+
+            lines.append("")
+            lines.append("--- JOURNAL (30 dernieres lignes) ---")
+            if self.log_text:
+                lines.extend(self.log_text.toPlainText().splitlines()[-30:])
+
+            dump_file = dump_dir / f"ui_dump_{timestamp}.txt"
+            dump_file.write_text("\n".join(lines), encoding="utf-8")
+
+            # Capture PNG de la fenetre (analyse pixels possible avec PIL)
+            capture_file = dump_dir / f"capture_{timestamp}.png"
+            self.grab().save(str(capture_file))
+
+            msg = f"Dump UI enregistre: {dump_file}"
+            logging.info(msg)
+            self.log_message(f"[DEBUG] {msg} + capture {capture_file.name}")
+        except Exception as e:
+            logging.error(f"Erreur lors du dump UI: {e}")
+            try:
+                self.log_message(f"[DEBUG] Erreur de dump UI: {e}")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
