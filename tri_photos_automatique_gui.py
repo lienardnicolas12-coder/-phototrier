@@ -6,22 +6,24 @@ import logging
 import sys
 import numpy as np
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFrame, QGraphicsScene,
     QGraphicsView, QGroupBox, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton,
     QRadioButton, QSizePolicy, QTabWidget, QTextEdit, QVBoxLayout,
     QHBoxLayout, QWidget, QMainWindow, QScrollArea, QGraphicsPixmapItem,
-    QGraphicsItem, QSpacerItem, QButtonGroup, QToolButton, QShortcut
+    QGraphicsItem, QSpacerItem, QButtonGroup, QToolButton, QShortcut, QProgressBar, QStyle,
+    QSplitter, QStyleOptionButton
 )
 from PyQt5.QtGui import (
     QPixmap, QImage, QPainter, QIcon, QFont, QColor,
-    QPalette, QBrush, QPen, QCursor, QTransform, QImageReader, QKeySequence
+    QPalette, QBrush, QPen, QCursor, QTransform, QImageReader, QKeySequence,
+    QLinearGradient, QFontMetrics
 )
 from PyQt5.QtCore import (
     Qt, QPoint, QPointF, QSize, QRect, QRectF, pyqtSignal,
-    QThread, QObject, QTimer, QEvent, QMargins, QSizeF, QDateTime
+    QThread, QObject, QTimer, QEvent, QMargins, QSizeF, QDateTime, QVariantAnimation
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from sentence_transformers import SentenceTransformer, util
@@ -151,6 +153,323 @@ class FileHandler(FileSystemEventHandler):
             if not any(event.src_path.lower().endswith(ext) for ext in ['.thm', '.xmp', '.json']):
                 self.worker.file_detected.emit(event.src_path)
 
+
+# ====================== ZONE DE DEPOT (GLISSER-DEPOSER) ======================
+class DropZone(QListWidget):
+    """Liste de miniatures acceptant le glisser-deposer de fichiers et de dossiers."""
+    files_dropped = pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QListWidget.DropOnly)
+        self.viewport().setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+            if paths:
+                self.files_dropped.emit(paths)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
+
+
+# ====================== BOUTONS ET PROGRESSION ANIMES ======================
+class ShineButton(QPushButton):
+    """Bouton avec un reflet blanc balayant de gauche a droite au clic."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._shine = -1.0
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(600)
+        self._anim.valueChanged.connect(self._set_shine)
+        self.clicked.connect(self.start_shine)
+
+    def start_shine(self):
+        self._anim.stop()
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.start()
+
+    def _set_shine(self, value):
+        self._shine = float(value)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._shine < 0.0 or self._shine > 1.0:
+            return
+        text = self.text()
+        if not text:
+            return
+        # Rectangle reel du texte (decalage icone compris) : le reflet ne touche que les lettres
+        opt = QStyleOptionButton()
+        opt.initFrom(self)
+        opt.text = text
+        opt.icon = self.icon()
+        contents = self.style().subElementRect(QStyle.SE_PushButtonContents, opt, self)
+        fm = QFontMetrics(self.font())
+        text_w = fm.horizontalAdvance(text)
+        text_h = fm.height()
+        icon = self.icon()
+        icon_w = icon.actualSize(QSize(16, 16)).width() + 4 if not icon.isNull() else 0
+        block_w = icon_w + text_w
+        x0 = contents.left() + max(0, (contents.width() - block_w) // 2) + icon_w
+        text_rect = QRect(x0, contents.center().y() - text_h // 2, text_w, text_h)
+        band = max(24.0, text_w * 0.5)
+        x = text_rect.left() - band + (text_w + band) * self._shine
+        painter = QPainter(self)
+        painter.setClipRect(text_rect)
+        gradient = QLinearGradient(x, 0.0, x + band, 0.0)
+        gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
+        gradient.setColorAt(0.5, QColor(255, 255, 255, 110))
+        gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.fillRect(QRectF(x, 0.0, band, float(self.height())), QBrush(gradient))
+        painter.end()
+
+
+class ShineProgressBar(QProgressBar):
+    """Barre de progression avec un reflet blanc en mouvement continu."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._shine = 0.0
+        self._anim = QVariantAnimation(self)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setDuration(1200)
+        self._anim.setLoopCount(-1)
+        self._anim.valueChanged.connect(self._set_shine)
+        self._anim.start()
+
+    def _set_shine(self, value):
+        self._shine = float(value)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        total = self.maximum() - self.minimum()
+        if total <= 0:
+            return
+        filled = (self.width() - 4) * (self.value() - self.minimum()) / float(total)
+        if filled < 8:
+            return
+        band = max(30.0, filled * 0.4)
+        x = -band + (filled + band) * self._shine
+        painter = QPainter(self)
+        gradient = QLinearGradient(x, 0.0, x + band, 0.0)
+        gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
+        gradient.setColorAt(0.5, QColor(255, 255, 255, 70))
+        gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.fillRect(QRectF(x, 2.0, band, float(self.height() - 4)), QBrush(gradient))
+        painter.end()
+
+
+# ====================== LECTURE PLEIN ECRAN ======================
+class FullScreenViewer(QWidget):
+    """Affichage plein ecran d'une photo (Echap ou double-clic pour fermer)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self.setStyleSheet("background-color: #000000;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.view = QGraphicsView(self)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.view.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        self.scene = QGraphicsScene(self.view)
+        self.view.setScene(self.scene)
+        layout.addWidget(self.view)
+
+    def show_pixmap(self, pixmap):
+        """Affiche la pixmap en plein ecran, adaptee a l'ecran."""
+        if pixmap is None or pixmap.isNull():
+            return
+        self.scene.clear()
+        item = self.scene.addPixmap(pixmap)
+        item.setTransformationMode(Qt.SmoothTransformation)
+        self.scene.setSceneRect(QRectF(pixmap.rect()))
+        self.showFullScreen()
+        self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        self.close()
+
+
+# ====================== VIEWPORT DE PREVISUALISATION ======================
+class ImageViewport(QWidget):
+    """Affichage d'une image : zoom molette (avant), deplacement au clic droit."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.view = QGraphicsView(self)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.view.setRenderHint(QPainter.Antialiasing)
+        self.view.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        self.view.setDragMode(QGraphicsView.NoDrag)
+        self.view.setMouseTracking(True)
+        self.view.viewport().setMouseTracking(True)
+        self.view.viewport().installEventFilter(self)
+        self.scene = QGraphicsScene(self.view)
+        self.view.setScene(self.scene)
+        layout.addWidget(self.view)
+
+        self.pixmap_item = None
+        self.zoom_step = 1.5
+        self.max_zoom = self.zoom_step ** 4
+        self.zoom_current = 1.0
+        self.zoom_target = 1.0
+        self.zoom_active = False
+        self.base_scale = 1.0
+        self.right_button_pressed = False
+        self.last_mouse_pos = QPointF()
+        self.zoom_timer = QTimer(self)
+        self.zoom_timer.setInterval(16)
+        self.zoom_timer.timeout.connect(self._apply_smooth_zoom)
+
+    def set_pixmap(self, pixmap):
+        self.scene.clear()
+        self.pixmap_item = self.scene.addPixmap(pixmap)
+        self.pixmap_item.setTransformationMode(Qt.SmoothTransformation)
+        self.pixmap_item.setPos(0, 0)
+        self.fit_in_view()
+
+    def clear_view(self):
+        self.scene.clear()
+        self.pixmap_item = None
+
+    def fit_in_view(self):
+        if not self.pixmap_item:
+            return
+        self.view.setTransform(QTransform())
+        self.pixmap_item.setPos(0, 0)
+        rect = self.pixmap_item.boundingRect()
+        self.scene.setSceneRect(rect)
+        self.view.horizontalScrollBar().setValue(0)
+        self.view.verticalScrollBar().setValue(0)
+        self.view.fitInView(rect, Qt.KeepAspectRatio)
+        self.base_scale = self.view.transform().m11()
+        if self.base_scale <= 0:
+            self.base_scale = 1.0
+        self.zoom_current = 1.0
+        self.zoom_target = 1.0
+
+    def zoom_in(self):
+        if self.pixmap_item and not self.zoom_active:
+            new_zoom = self.zoom_current * self.zoom_step
+            if new_zoom <= self.max_zoom:
+                self.zoom_target = new_zoom
+                if not self.zoom_timer.isActive():
+                    self.zoom_timer.start()
+                    self.zoom_active = True
+
+    def zoom_reset(self):
+        self.zoom_current = 1.0
+        self.zoom_target = 1.0
+        if self.pixmap_item:
+            self.fit_in_view()
+
+    def _apply_smooth_zoom(self):
+        if not self.zoom_active or not self.pixmap_item:
+            self.zoom_timer.stop()
+            return
+        self.zoom_current += (self.zoom_target - self.zoom_current) * 0.3
+        total_scale = self.base_scale * self.zoom_current
+        self.view.setTransform(QTransform().scale(total_scale, total_scale))
+        if abs(self.zoom_target - self.zoom_current) < 0.001:
+            self.zoom_current = self.zoom_target
+            self.zoom_timer.stop()
+            self.zoom_active = False
+
+    def eventFilter(self, obj, event):
+        if obj == self.view.viewport():
+            if event.type() == QEvent.Type.Wheel:
+                if event.angleDelta().y() > 0:
+                    self.zoom_in()
+                return True
+            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.RightButton:
+                self.right_button_pressed = True
+                self.last_mouse_pos = event.localPos()
+                self.view.setCursor(Qt.ClosedHandCursor)
+                event.accept()
+                return True
+            elif event.type() == QEvent.Type.MouseMove and self.right_button_pressed:
+                if self.pixmap_item:
+                    delta = event.localPos() - self.last_mouse_pos
+                    self.last_mouse_pos = event.localPos()
+                    self.view.setUpdatesEnabled(False)
+                    self.pixmap_item.moveBy(delta.x(), delta.y())
+                    self.view.setUpdatesEnabled(True)
+                event.accept()
+                return True
+            elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.RightButton:
+                self.right_button_pressed = False
+                self.view.setCursor(Qt.ArrowCursor)
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
+
+
+# ====================== TRI EN ARRIERE-PLAN ======================
+class TriWorker(QThread):
+    """Trie les fichiers dans un thread separe pour ne pas bloquer l'interface."""
+    progress = pyqtSignal(int, int, str)
+    finished_tri = pyqtSignal(int, int)
+    error = pyqtSignal(str)
+
+    def __init__(self, app, files):
+        super().__init__()
+        self.app = app
+        self.files = files
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+    def run(self):
+        done = 0
+        errors = 0
+        total = len(self.files)
+        for i, filepath in enumerate(self.files):
+            if self.cancelled:
+                break
+            self.progress.emit(i, total, os.path.basename(str(filepath)))
+            try:
+                self.app.classer_et_deplacer(str(filepath))
+                done += 1
+            except Exception as e:
+                errors += 1
+                self.error.emit(f"{filepath}: {e}")
+        self.progress.emit(total, total, "")
+        self.finished_tri.emit(done, errors)
+
 # ====================== GESTION DES TAGS ======================
 class TagManager:
     def __init__(self, tags_file):
@@ -237,6 +556,8 @@ class TagManager:
 
 # ====================== APPLICATION PRINCIPALE ======================
 class PhotoSorterApp(QMainWindow):
+    log_signal = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PhotoTrier")
@@ -247,16 +568,53 @@ class PhotoSorterApp(QMainWindow):
             pass
 
         self.setStyleSheet("""
-            QMainWindow { background-color: #2b2b2b; color: #ffffff; }
-            QTabWidget::pane { border: 1px solid #444; background-color: #2b2b2b; }
-            QTabBar::tab { background-color: #3c3f41; color: #ffffff; padding: 8px; }
-            QTabBar::tab:selected { background-color: #509cfb; }
-            QLabel, QLineEdit, QGroupBox { background-color: #3c3f41; color: #ffffff; border: 1px solid #444; border-radius: 4px; padding: 4px; }
-            QPushButton { background-color: #509cfb; color: white; border: none; padding: 8px 16px; border-radius: 4px; min-width: 100px; }
-            QPushButton:hover { background-color: #6fa2f7; }
-            QListWidget { background-color: #3c3f41; color: white; border: 1px solid #509cfb; border-radius: 4px; }
-            QTextEdit { background-color: #1e1e1e; color: #00ff00; border: 1px solid #444; font-family: Consolas, monospace; }
-            QCheckBox, QRadioButton { spacing: 8px; color: #ffffff; }
+            /* ====== Theme sombre type Fluent Design ====== */
+            QMainWindow { background-color: #1A1A1A; color: #FFFFFF; }
+            QWidget { background-color: #1A1A1A; color: #FFFFFF;
+                      font-family: "Segoe UI", "Inter", "Arial", sans-serif; font-size: 14px; }
+            QLabel { background-color: transparent; border: none; color: #FFFFFF; }
+            QLineEdit { background-color: #252526; color: #FFFFFF; border: 1px solid #333333;
+                        border-radius: 8px; padding: 6px 10px; selection-background-color: #0078D4; }
+            QGroupBox { background-color: #1E1E1E; border: 1px solid #333333; border-radius: 12px;
+                        margin-top: 14px; padding: 14px 10px 10px 10px; color: #FFFFFF;
+                        font-weight: 700; letter-spacing: 1px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 6px;
+                              background-color: #1E1E1E; color: #FFFFFF; }
+            QPushButton { background-color: transparent; color: #FFFFFF; border: 1px solid #333333;
+                         border-radius: 8px; padding: 8px 16px; min-width: 100px; font-weight: 700; }
+            QPushButton:hover { background-color: rgba(255, 255, 255, 25); border-color: #555555; }
+            QPushButton:pressed { background-color: rgba(255, 255, 255, 45); border-color: #555555; }
+            QPushButton:disabled { color: #666666; border-color: #252526; }
+            QTabWidget::pane { border: 1px solid #333333; border-radius: 8px; background-color: #1A1A1A; }
+            QTabBar::tab { background-color: transparent; color: #CCCCCC; padding: 10px 18px;
+                          border: 1px solid #333333; border-bottom: none;
+                          border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 4px; }
+            QTabBar::tab:selected { background-color: #0078D4; color: #FFFFFF; }
+            QTabBar::tab:hover:!selected { background-color: #252526; }
+            QListWidget { background-color: #1E1E1E; color: #FFFFFF; border: 1px solid #333333;
+                          border-radius: 8px; outline: none; }
+            QListWidget::item { border-radius: 8px; padding: 4px; margin: 2px; }
+            QListWidget::item:hover { background-color: rgba(255, 255, 255, 30); }
+            QListWidget::item:selected { background-color: #0078D4; color: #FFFFFF; }
+            QTextEdit { background-color: #1A1A1A; color: #AAAAAA; border: 1px solid #333333;
+                        font-family: Consolas, monospace; font-size: 12px; }
+            QCheckBox, QRadioButton { spacing: 8px; color: #CCCCCC; background-color: transparent; }
+            QProgressBar { background-color: #252526; border: 1px solid #333333; border-radius: 6px;
+                          text-align: center; color: #FFFFFF; }
+            QProgressBar::chunk { background-color: #0078D4; border-radius: 5px; }
+            QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+            QScrollBar::handle:vertical { background: #333333; border-radius: 5px; min-height: 24px; }
+            QScrollBar::handle:vertical:hover { background: #0078D4; }
+            QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
+            QScrollBar::handle:horizontal { background: #333333; border-radius: 5px; min-width: 24px; }
+            QScrollBar::handle:horizontal:hover { background: #0078D4; }
+            QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
+            QSplitter::handle { background-color: #2A2A2A; }
+            QSplitter::handle:hover { background-color: rgba(255, 255, 255, 60); }
+            QSplitter::handle:horizontal { height: 4px; margin: 2px 1px; }
+            QSplitter::handle:vertical { height: 4px; margin: 1px 2px; }
+            QToolTip { background-color: #252526; color: #FFFFFF; border: 1px solid #333333;
+                       border-radius: 6px; padding: 4px; }
         """)
 
         # Initialiser la configuration et créer les répertoires
@@ -268,39 +626,25 @@ class PhotoSorterApp(QMainWindow):
         self.watchdog_worker = None
         self.text_embeddings = None
 
-        # Variables pour le zoom avec 4 étapes (plus robuste)
-        self.zoom_factor = 1.0
-        self.zoom_step = 1.5  # ✅ 4 étapes : 1.0 → 1.5 → 2.25 → 3.375
-        self.min_zoom = 1.0 / (self.zoom_step ** 4)  # ~0.197
-        self.max_zoom = self.zoom_step ** 4  # ~5.06
-
-        # Variables pour le lissage
-        self.zoom_timer = QTimer(self)
-        self.zoom_timer.setInterval(16)  # 60 FPS
-        self.zoom_timer.timeout.connect(self._apply_smooth_zoom)
-        self.zoom_target = 1.0
-        self.zoom_current = 1.0
-        self.zoom_active = False
-
         self.current_image_path = None
+        self.current_category = None
 
         # Attributs de l'interface
-        self.entry_source = None
-        self.entry_output = None
         self.log_text = None
         self.check_watch = None
         self.new_tag_input = None
         self.tag_search = None
         self.search_results = None
-        self.graphics_view = None
         self.current_tags_label = None
         self.folder_path_input = None
 
-        # Attributs pour les paramètres
-        self.storage_path_input = None
+        # Attributs pour les parametres
         self.categories_list = None
         self.category_name_input = None
         self.category_desc_input = None
+
+        # Tri en arriere-plan
+        self.tri_worker = None
 
         # Charger la configuration sauvegardée
         self.load_saved_config()
@@ -311,6 +655,9 @@ class PhotoSorterApp(QMainWindow):
         # Raccourci de debug : F12 enregistre un dump complet de l'interface
         self.dump_shortcut = QShortcut(QKeySequence("F12"), self)
         self.dump_shortcut.activated.connect(self.dump_ui_state)
+
+        # Journal thread-safe : les messages passent par un signal
+        self.log_signal.connect(self._append_log)
 
     # ====================== CHARGEMENT DE LA CONFIGURATION ======================
     def load_saved_config(self):
@@ -326,8 +673,11 @@ class PhotoSorterApp(QMainWindow):
                 self.config.DOSSIER_TRIES = custom_path / "tries"
                 self.config.MODEL_SAVE_PATH = custom_path / "models"
                 # TAGS_FILE et CONFIG_FILE restent dans le dossier racine du projet (chemins fixes)
-                # Recreate directories with new path
-                Config.ensure_directories()
+                # ensure_directories() est un classmethod : il utilise les attributs de CLASSE,
+                # pas les attributs d'instance modifies ci-dessus. On cree donc les dossiers ici.
+                self.config.DOSSIER_A_TRIER.mkdir(parents=True, exist_ok=True)
+                self.config.DOSSIER_TRIES.mkdir(parents=True, exist_ok=True)
+                self.config.MODEL_SAVE_PATH.mkdir(parents=True, exist_ok=True)
         
         # Charger les catégories personnalisées
         if 'categories' in saved_config:
@@ -360,7 +710,10 @@ class PhotoSorterApp(QMainWindow):
         return QPixmap.fromImage(qimg)
 
     def log_message(self, message):
-        """Ajoute un message au journal"""
+        """Ajoute un message au journal (thread-safe : passe par un signal)"""
+        self.log_signal.emit(str(message))
+
+    def _append_log(self, message):
         if self.log_text:
             self.log_text.append(message)
 
@@ -369,8 +722,8 @@ class PhotoSorterApp(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(20)
 
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
@@ -380,143 +733,313 @@ class PhotoSorterApp(QMainWindow):
         self.refresh_tags_list()
 
     def setup_tri_tab(self):
-        """Onglet fusionne : Tri Automatique + Parametres"""
+        """Onglet : zone de depot, dossiers de tri, previsualisation, progression."""
         self.tri_tab = QWidget()
         self.tabs.addTab(self.tri_tab, "\ud83d\udcf7 Tri & Parametres")
         main_layout = QVBoxLayout(self.tri_tab)
-        main_layout.setSpacing(10)
+        main_layout.setSpacing(20)
 
-        # ========== SECTION HAUTE : 2 COLONNES ==========
-        top_layout = QHBoxLayout()
+        # ========== DISPOSITION : preview en haut (2/3), depot + dossiers en bas (1/3) ==========
+        # Deux splitters : redimensionnement manuel des zones
+        self.tri_splitter = QSplitter(Qt.Vertical)
+        self.tri_splitter.setChildrenCollapsible(False)
+        self.bottom_splitter = QSplitter(Qt.Horizontal)
+        self.bottom_splitter.setChildrenCollapsible(False)
 
-        # --- COLONNE GAUCHE : Dossiers + Modele + Tri ---
-        left_box = QVBoxLayout()
+        # --- Zone de depot glisser-deposer ---
+        drop_group = QGroupBox("Zone de d\u00e9p\u00f4t (glisser-d\u00e9poser)")
+        drop_layout = QVBoxLayout(drop_group)
 
-        # Dossier de stockage
-        storage_group = QGroupBox("\ud83d\udcc2 Dossier de stockage")
-        storage_layout = QVBoxLayout()
-        storage_path_frame = QFrame()
-        storage_path_layout = QHBoxLayout(storage_path_frame)
-        storage_path_layout.addWidget(QLabel("Dossier:"))
-        self.storage_path_input = QLineEdit(str(self.config.BASE_DIR))
-        self.storage_path_input.setMinimumWidth(300)
-        storage_path_layout.addWidget(self.storage_path_input)
-        browse_storage_btn = QPushButton("Changer...")
-        browse_storage_btn.clicked.connect(self.browse_storage_path)
-        storage_path_layout.addWidget(browse_storage_btn)
-        storage_layout.addWidget(storage_path_frame)
-        storage_group.setLayout(storage_layout)
-        left_box.addWidget(storage_group)
+        self.drop_list = DropZone()
+        self.drop_list.setViewMode(QListWidget.IconMode)
+        self.drop_list.setIconSize(QSize(100, 100))
+        self.drop_list.setResizeMode(QListWidget.Adjust)
+        self.drop_list.setMovement(QListWidget.Static)
+        self.drop_list.setWrapping(True)
+        self.drop_list.setSpacing(6)
+        self.drop_list.setMinimumHeight(160)
+        self.drop_list.setStyleSheet("""
+            QListWidget { background-color: #1E1E1E; border: 1px dashed #0078D4; border-radius: 8px; }
+            QListWidget::item { border-radius: 8px; padding: 4px; margin: 2px; }
+            QListWidget::item:hover { background-color: rgba(255, 255, 255, 30); }
+            QListWidget::item:selected { background-color: #0078D4; }
+        """)
+        self.drop_list.itemClicked.connect(self.preview_from_drop)
+        self.drop_list.files_dropped.connect(self.on_files_dropped)
+        drop_layout.addWidget(self.drop_list)
 
-        # Dossier a trier
-        source_frame = QFrame()
-        source_layout = QHBoxLayout(source_frame)
-        source_layout.addWidget(QLabel("A trier:"))
-        self.entry_source = QLineEdit(str(self.config.DOSSIER_A_TRIER))
-        self.entry_source.setMinimumWidth(300)
-        source_layout.addWidget(self.entry_source)
-        browse_source_btn = QPushButton("Parcourir")
-        browse_source_btn.clicked.connect(self.browse_source)
-        source_layout.addWidget(browse_source_btn)
-        left_box.addWidget(source_frame)
+        self.drop_hint = QLabel("Glissez vos photos ou dossiers ici\n(tout est copi\u00e9 dans le dossier \u00e0 trier)")
+        self.drop_hint.setAlignment(Qt.AlignCenter)
+        self.drop_hint.setStyleSheet("color: #aaaaaa; border: none;")
+        drop_layout.addWidget(self.drop_hint)
 
-        # Dossier de sortie
-        output_frame = QFrame()
-        output_layout = QHBoxLayout(output_frame)
-        output_layout.addWidget(QLabel("Sortie:"))
-        self.entry_output = QLineEdit(str(self.config.DOSSIER_TRIES))
-        self.entry_output.setMinimumWidth(300)
-        output_layout.addWidget(self.entry_output)
-        browse_output_btn = QPushButton("Parcourir")
-        browse_output_btn.clicked.connect(self.browse_output)
-        output_layout.addWidget(browse_output_btn)
-        left_box.addWidget(output_frame)
+        self.drop_count_label = QLabel("0 photo(s) en attente")
+        self.drop_count_label.setStyleSheet("font-weight: bold; color: #ffffff; border: none;")
+        drop_layout.addWidget(self.drop_count_label)
 
-        # Modele de classification
-        options_group = QGroupBox("Modele de classification")
-        options_layout = QVBoxLayout()
-        self.radio_clip = QRadioButton("CLIP (actif)")
-        self.radio_clip.setChecked(True)
-        self.radio_clip.setEnabled(False)
-        options_layout.addWidget(self.radio_clip)
-        options_group.setLayout(options_layout)
-        left_box.addWidget(options_group)
+        # Selection manuelle en plus du glisser-deposer
+        select_row = QHBoxLayout()
+        self.select_files_btn = ShineButton("\ud83d\uddc2 Fichiers...")
+        self.select_files_btn.clicked.connect(self.select_files_dialog)
+        select_row.addWidget(self.select_files_btn)
+        self.select_folder_btn = ShineButton("\ud83d\udcc1 Dossier...")
+        self.select_folder_btn.clicked.connect(self.select_folder_dialog)
+        select_row.addWidget(self.select_folder_btn)
+        select_row.addStretch(1)
+        drop_layout.addLayout(select_row)
 
-        # Surveillance
-        watch_group = QGroupBox("Surveillance")
-        watch_layout = QHBoxLayout()
-        self.check_watch = QCheckBox("Demarrer la surveillance")
+        # Surveillance (option expert) + tri manuel
+        actions_row = QHBoxLayout()
+        watch_box = QGroupBox("Surveillance (expert)")
+        watch_layout = QHBoxLayout(watch_box)
+        self.check_watch = QCheckBox("D\u00e9marrer la surveillance")
         self.check_watch.stateChanged.connect(self.toggle_watchdog)
         watch_layout.addWidget(self.check_watch)
-        watch_group.setLayout(watch_layout)
-        left_box.addWidget(watch_group)
+        actions_row.addWidget(watch_box)
+        actions_row.addStretch()
+        self.sort_btn = ShineButton("\ud83d\udcc1 Trier maintenant")
+        self.sort_btn.clicked.connect(self.trier_dossier_maintenant)
+        actions_row.addWidget(self.sort_btn)
+        drop_layout.addLayout(actions_row)
 
-        # Bouton Trier maintenant
-        sort_btn = QPushButton("\ud83d\udcc1 Trier maintenant")
-        sort_btn.setStyleSheet("font-weight: bold;")
-        sort_btn.clicked.connect(self.trier_dossier_maintenant)
-        left_box.addWidget(sort_btn)
+        # Accepter le depot sur toute la zone gauche (cadre, titre et libelle compris)
+        self.drop_group = drop_group
+        drop_group.setAcceptDrops(True)
+        drop_group.installEventFilter(self)
 
-        left_box.addStretch()
-        top_layout.addLayout(left_box)
+        self.bottom_splitter.addWidget(drop_group)
 
-        # --- COLONNE DROITE : Categories ---
-        right_box = QVBoxLayout()
-
-        categories_group = QGroupBox("\ud83c\udff7\ufe0f Categoriees de tri")
-        categories_layout = QVBoxLayout()
+        # --- Dossiers de tri (categories) ---
+        categories_group = QGroupBox("Dossiers de tri")
+        categories_layout = QVBoxLayout(categories_group)
 
         self.categories_list = QListWidget()
-        self.categories_list.setMinimumHeight(200)
-        self.refresh_categories_list()
+        self.categories_list.setViewMode(QListWidget.IconMode)
+        self.categories_list.setIconSize(QSize(80, 80))
+        self.categories_list.setResizeMode(QListWidget.Adjust)
+        self.categories_list.setMovement(QListWidget.Static)
+        self.categories_list.setWrapping(True)
+        self.categories_list.setSpacing(6)
+        self.categories_list.setMinimumHeight(160)
+        self.categories_list.setStyleSheet("""
+            QListWidget { background-color: #1E1E1E; border: 1px solid #333333; border-radius: 8px; }
+            QListWidget::item { border-radius: 8px; padding: 4px; margin: 2px; }
+            QListWidget::item:hover { background-color: rgba(255, 255, 255, 30); }
+            QListWidget::item:selected { background-color: #0078D4; }
+        """)
+        self.categories_list.itemClicked.connect(self.on_category_item_clicked)
         categories_layout.addWidget(self.categories_list)
 
-        buttons_frame = QFrame()
-        buttons_layout = QHBoxLayout(buttons_frame)
-        add_category_btn = QPushButton("\u2795 Ajouter")
+        self.folder_back_btn = ShineButton("\u2b05 Dossiers")
+        self.folder_back_btn.setVisible(False)
+        self.folder_back_btn.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.folder_back_btn.clicked.connect(self.show_folders_view)
+        categories_layout.addWidget(self.folder_back_btn)
+
+        self.category_buttons_frame = QFrame()
+        buttons_layout = QHBoxLayout(self.category_buttons_frame)
+        add_category_btn = ShineButton("\u2795 Ajouter")
         add_category_btn.clicked.connect(self.add_category)
         buttons_layout.addWidget(add_category_btn)
-        edit_category_btn = QPushButton("\u270f Modifier")
+        edit_category_btn = ShineButton("\u270f Modifier")
         edit_category_btn.clicked.connect(self.edit_category)
         buttons_layout.addWidget(edit_category_btn)
-        delete_category_btn = QPushButton("\u274c Supprimer")
+        delete_category_btn = ShineButton("\u274c Supprimer")
         delete_category_btn.clicked.connect(self.delete_category)
         buttons_layout.addWidget(delete_category_btn)
-        categories_layout.addWidget(buttons_frame)
+        categories_layout.addWidget(self.category_buttons_frame)
 
         actions_frame = QFrame()
         actions_layout = QHBoxLayout(actions_frame)
-        save_btn = QPushButton("\ud83d\udcbe Enregistrer")
-        save_btn.setStyleSheet("font-weight: bold; background-color: #28a745;")
+        save_btn = ShineButton("\ud83d\udcbe Enregistrer")
+        save_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         save_btn.clicked.connect(self.save_settings)
         actions_layout.addWidget(save_btn)
         categories_layout.addWidget(actions_frame)
 
         self.settings_status = QLabel("")
-        self.settings_status.setStyleSheet("color: #28a745;")
+        self.settings_status.setStyleSheet("color: #107C10; border: none;")
         categories_layout.addWidget(self.settings_status)
 
-        categories_group.setLayout(categories_layout)
-        right_box.addWidget(categories_group)
-        right_box.addStretch()
-        top_layout.addLayout(right_box)
+        self.bottom_splitter.addWidget(categories_group)
+        self.tri_splitter.addWidget(self.bottom_splitter)
 
-        main_layout.addLayout(top_layout)
+        # ========== PREVISUALISATION : viewport unique ==========
+        preview_group = QGroupBox("Pr\u00e9visualisation")
+        preview_layout = QVBoxLayout(preview_group)
 
-        # ========== JOURNAL (pleine largeur) ==========
-        log_group = QGroupBox("Journal")
-        log_layout = QVBoxLayout()
+        self.preview_viewport = ImageViewport()
+        self.preview_viewport.setMinimumHeight(280)
+        preview_layout.addWidget(self.preview_viewport, 1)
+
+        # Bouton plein ecran superpose en bas a droite de l'image
+        self.fullscreen_viewer = FullScreenViewer()
+        self.fullscreen_btn = ShineButton("\u26f6 Plein \u00e9cran")
+        self.fullscreen_btn.setParent(self.preview_viewport)
+        self.fullscreen_btn.setStyleSheet(
+            "QPushButton { background-color: rgba(255, 255, 255, 25);"
+            " border: 1px solid rgba(255, 255, 255, 60); color: #FFFFFF;"
+            " border-radius: 8px; padding: 6px 12px; min-width: 100px; }")
+        self.fullscreen_btn.setCursor(Qt.PointingHandCursor)
+        self.fullscreen_btn.clicked.connect(self.toggle_fullscreen_preview)
+        self.preview_viewport.installEventFilter(self)
+        self.fullscreen_btn.show()
+        self.tri_splitter.insertWidget(0, preview_group)
+        self.tri_splitter.setStretchFactor(0, 2)
+        self.tri_splitter.setStretchFactor(1, 1)
+        self.tri_splitter.setSizes([700, 350])
+        self.bottom_splitter.setStretchFactor(0, 3)
+        self.bottom_splitter.setStretchFactor(1, 2)
+        main_layout.addWidget(self.tri_splitter, 1)
+
+        # ========== PROGRESSION DU TRI + JOURNAL (masque) ==========
+        progress_row = QHBoxLayout()
+        self.sort_progress = ShineProgressBar()
+        self.sort_progress.setTextVisible(False)
+        self.sort_progress.setVisible(False)
+        progress_row.addWidget(self.sort_progress, 1)
+        self.sort_status_label = QLabel("Pr\u00eat.")
+        progress_row.addWidget(self.sort_status_label)
+        self.cancel_sort_btn = ShineButton("Annuler")
+        self.cancel_sort_btn.setVisible(False)
+        self.cancel_sort_btn.clicked.connect(self.cancel_sort)
+        progress_row.addWidget(self.cancel_sort_btn)
+        self.log_toggle_btn = ShineButton("Journal")
+        self.log_toggle_btn.setCheckable(True)
+        self.log_toggle_btn.toggled.connect(self.toggle_journal)
+        progress_row.addWidget(self.log_toggle_btn)
+        self.debug_dump_btn = ShineButton("Debug")
+        self.debug_dump_btn.setToolTip("Enregistre un dump de l'interface (debug_ui/)")
+        self.debug_dump_btn.clicked.connect(self.dump_ui_state)
+        progress_row.addWidget(self.debug_dump_btn)
+        main_layout.addLayout(progress_row)
+
+        # Journal masque par defaut, accessible via le bouton
+        self.log_group = QGroupBox("Journal")
+        log_layout = QVBoxLayout(self.log_group)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumHeight(150)
         log_layout.addWidget(self.log_text)
-        log_group.setLayout(log_layout)
-        main_layout.addWidget(log_group)
+        self.log_group.setVisible(False)
+        main_layout.addWidget(self.log_group)
+
+        self.refresh_drop_zone()
+        self.refresh_categories_list()
+
+    # ====================== ZONE DE DEPOT ======================
+    def on_files_dropped(self, paths):
+        """Copie les fichiers/dossiers deposes dans le dossier a trier."""
+        added = 0
+        exts = self.config.IMAGE_EXTENSIONS | self.config.RAW_EXTENSIONS
+        for path in paths:
+            p = Path(path)
+            if p.is_dir():
+                for root, _, fnames in os.walk(p):
+                    for fn in fnames:
+                        f = Path(root) / fn
+                        if f.suffix.lower() in exts:
+                            added += self._copy_to_trier(f)
+            elif p.is_file() and p.suffix.lower() in exts:
+                added += self._copy_to_trier(p)
+        if added:
+            self.log_message(f"\u2705 {added} photo(s) ajout\u00e9e(s) au dossier \u00e0 trier")
+        else:
+            self.log_message("\u26a0\ufe0f Aucune image trouv\u00e9e dans le d\u00e9p\u00f4t")
+        self.refresh_drop_zone()
+
+    def select_files_dialog(self):
+        """Ouvre un dialogue pour selectionner des fichiers a copier dans a_trier."""
+        exts = sorted(self.config.IMAGE_EXTENSIONS | self.config.RAW_EXTENSIONS)
+        filters = "Images (%s);;Tous les fichiers (*)" % " ".join("*" + e for e in exts)
+        paths, _ = QFileDialog.getOpenFileNames(self, "Choisir des photos a trier", "", filters)
+        if paths:
+            self.on_files_dropped(paths)
+
+    def select_folder_dialog(self):
+        """Ouvre un dialogue pour selectionner un dossier a copier dans a_trier."""
+        folder = QFileDialog.getExistingDirectory(self, "Choisir un dossier de photos")
+        if folder:
+            self.on_files_dropped([folder])
+
+    def _copy_to_trier(self, src):
+        """Copie une image dans le dossier a trier (renomme en cas de collision)."""
+        try:
+            self.config.DOSSIER_A_TRIER.mkdir(parents=True, exist_ok=True)
+            if src.resolve() == (self.config.DOSSIER_A_TRIER / src.name).resolve():
+                return 0  # deja present dans le dossier a trier
+        except OSError:
+            pass
+        dest = self.config.DOSSIER_A_TRIER / src.name
+        counter = 1
+        while dest.exists():
+            dest = self.config.DOSSIER_A_TRIER / f"{src.stem}_{counter}{src.suffix}"
+            counter += 1
+        try:
+            shutil.copy2(str(src), str(dest))
+            return 1
+        except Exception as e:
+            self.log_message(f"\u26a0\ufe0f Impossible de copier {src}: {e}")
+            return 0
+
+    def _image_files_in(self, folder):
+        """Liste les fichiers image (recursif) d'un dossier."""
+        files = []
+        for root, _, fnames in os.walk(folder):
+            for fn in fnames:
+                p = Path(root) / fn
+                if p.suffix.lower() in (self.config.IMAGE_EXTENSIONS | self.config.RAW_EXTENSIONS):
+                    files.append(p)
+        return files
+
+    def refresh_drop_zone(self):
+        """Rafraichit les miniatures de la zone de depot."""
+        self.drop_list.clear()
+        files = self._image_files_in(self.config.DOSSIER_A_TRIER)
+        for p in files:
+            item = QListWidgetItem()
+            thumb = self.create_thumbnail(str(p), 100)
+            if thumb is not None:
+                item.setIcon(QIcon(thumb))
+            item.setData(Qt.UserRole, str(p))
+            item.setToolTip(os.path.basename(str(p)))
+            self.drop_list.addItem(item)
+        self.drop_count_label.setText(f"{len(files)} photo(s) en attente")
+        self.drop_hint.setVisible(len(files) == 0)
+
+    # ====================== PREVISUALISATION ======================
+    def toggle_fullscreen_preview(self):
+        """Affiche la photo courante en plein ecran."""
+        viewport = getattr(self, 'preview_viewport', None)
+        if not viewport or not viewport.pixmap_item:
+            self.log_message("Aucune photo a afficher en plein ecran")
+            return
+        self.fullscreen_viewer.show_pixmap(viewport.pixmap_item.pixmap())
+
+    def preview_from_drop(self, item):
+        path = item.data(Qt.UserRole)
+        if path:
+            self.show_in_preview(path)
+
+    def show_in_preview(self, path):
+        """Affiche une image en grand dans le viewport de previsualisation."""
+        pixmap = self.load_image(path)
+        if pixmap is not None and not pixmap.isNull():
+            self.preview_viewport.set_pixmap(pixmap)
+            self.current_image_path = str(path)
+            self.sort_status_label.setText(os.path.basename(str(path)))
+        else:
+            self.log_message(f"Impossible d'afficher : {path}")
+
+    def toggle_journal(self, visible):
+        self.log_group.setVisible(visible)
 
     def setup_tags_tab(self):
         self.tags_tab = QWidget()
         self.tabs.addTab(self.tags_tab, "\ud83c\udff7\ufe0f Gestion des Tags")
         layout = QVBoxLayout(self.tags_tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(20)
 
         # Recherche par dossier
         folder_search_group = QGroupBox("Rechercher dans un dossier")
@@ -524,7 +1047,7 @@ class PhotoSorterApp(QMainWindow):
         self.folder_path_input = QLineEdit()
         self.folder_path_input.setPlaceholderText("Dossier \u00e0 scanner...")
         folder_search_layout.addWidget(self.folder_path_input)
-        browse_folder_btn = QPushButton("\ud83d\udcc1 Parcourir dossier")
+        browse_folder_btn = ShineButton("\ud83d\udcc1 Parcourir dossier")
         browse_folder_btn.clicked.connect(self.browse_folder_for_tags)
         folder_search_layout.addWidget(browse_folder_btn)
         folder_search_group.setLayout(folder_search_layout)
@@ -534,64 +1057,8 @@ class PhotoSorterApp(QMainWindow):
         self.entry_image_path = QLineEdit()
         self.entry_image_path.setVisible(False)
 
-        # ========== ZONE CENTRALE : Viewport + Panneau miniatures + Liste tags ==========
+        # ========== ZONE CENTRALE : Panneau miniatures + Liste tags ==========
         content_layout = QHBoxLayout()
-
-        # --- Panneau gauche : Viewport + boutons zoom ---
-        left_panel = QVBoxLayout()
-
-        # Conteneur FIXE pour l'image (800x600)
-        image_container = QFrame()
-        image_container.setFixedSize(800, 600)
-        image_container.setStyleSheet("border: 2px solid #509cfb; background-color: #1e1e1e;")
-        left_panel.addWidget(image_container)
-
-        # Configuration du QGraphicsView avec taille FIXE
-        self.graphics_view = QGraphicsView(image_container)
-        self.graphics_view.setFixedSize(800, 600)
-        self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        
-        self.graphics_scene = QGraphicsScene(self.graphics_view)
-        self.graphics_view.setScene(self.graphics_scene)
-        self.graphics_view.setRenderHint(QPainter.Antialiasing)
-        self.graphics_view.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
-        self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
-        self.graphics_view.setAlignment(Qt.Alignment(0))
-        self.graphics_view.setDragMode(QGraphicsView.NoDrag)
-        self.graphics_view.setMouseTracking(True)
-        self.graphics_view.viewport().setMouseTracking(True)
-        
-        # Variables pour le déplacement avec le bouton droit
-        self.right_button_pressed = False
-        self.last_mouse_pos = QPointF()
-        
-        # Installe un event filter pour capturer la molette dans le viewport
-        self.graphics_view.viewport().installEventFilter(self)
-        
-        self.graphics_pixmap_item = QGraphicsPixmapItem()
-        self.graphics_scene.addItem(self.graphics_pixmap_item)
-
-        # Boutons de zoom
-        zoom_frame = QFrame()
-        zoom_layout = QHBoxLayout(zoom_frame)
-        zoom_layout.addStretch()
-
-        zoom_in_btn = QPushButton("+ Zoom")
-        zoom_in_btn.setStyleSheet("font-size: 12px;")
-        zoom_in_btn.clicked.connect(self.zoom_in)
-        zoom_layout.addWidget(zoom_in_btn)
-
-        zoom_reset_btn = QPushButton("Reset Zoom")
-        zoom_reset_btn.setStyleSheet("font-size: 12px;")
-        zoom_reset_btn.clicked.connect(self.zoom_reset)
-        zoom_layout.addWidget(zoom_reset_btn)
-
-        zoom_layout.addStretch()
-        left_panel.addWidget(zoom_frame)
-
-        content_layout.addLayout(left_panel)
 
         # --- Panneau droit : Miniatures ---
         thumb_group = QGroupBox("Miniatures")
@@ -607,9 +1074,10 @@ class PhotoSorterApp(QMainWindow):
         self.search_results.setSpacing(4)
         self.search_results.setFixedWidth(170)
         self.search_results.setStyleSheet("""
-            QListWidget { background-color: #1e1e1e; border: 1px solid #444; border-radius: 4px; }
-            QListWidget::item { border-radius: 4px; padding: 4px; }
-            QListWidget::item:selected { background-color: #509cfb; }
+            QListWidget { background-color: #1E1E1E; border: 1px solid #333333; border-radius: 8px; }
+            QListWidget::item { border-radius: 8px; padding: 4px; margin: 2px; }
+            QListWidget::item:hover { background-color: rgba(255, 255, 255, 30); }
+            QListWidget::item:selected { background-color: #0078D4; }
         """)
         self.search_results.itemClicked.connect(self.load_image_from_results)
         thumb_layout.addWidget(self.search_results)
@@ -622,9 +1090,10 @@ class PhotoSorterApp(QMainWindow):
         self.tags_list_widget = QListWidget()
         self.tags_list_widget.setFixedWidth(150)
         self.tags_list_widget.setStyleSheet("""
-            QListWidget { background-color: #1e1e1e; border: 1px solid #509cfb; border-radius: 4px; color: white; }
-            QListWidget::item { padding: 6px; }
-            QListWidget::item:selected { background-color: #509cfb; }
+            QListWidget { background-color: #1E1E1E; border: 1px solid #333333; border-radius: 8px; color: #FFFFFF; }
+            QListWidget::item { padding: 8px; border-radius: 6px; margin: 2px; }
+            QListWidget::item:hover { background-color: rgba(255, 255, 255, 30); }
+            QListWidget::item:selected { background-color: #0078D4; }
         """)
         self.tags_list_widget.itemClicked.connect(self.on_tag_selected)
         tags_list_layout.addWidget(self.tags_list_widget)
@@ -644,7 +1113,7 @@ class PhotoSorterApp(QMainWindow):
         self.new_tag_input = QLineEdit()
         self.new_tag_input.setPlaceholderText("Ex: cheval, paysage...")
         tag_layout.addWidget(self.new_tag_input)
-        add_tag_btn = QPushButton("\u2795 Ajouter le tag")
+        add_tag_btn = ShineButton("\u2795 Ajouter le tag")
         add_tag_btn.clicked.connect(self.add_tag_to_image)
         tag_layout.addWidget(add_tag_btn)
         tag_group.setLayout(tag_layout)
@@ -654,37 +1123,61 @@ class PhotoSorterApp(QMainWindow):
         self.tag_search = QLineEdit()
         self.tag_search.setVisible(False)
     def refresh_categories_list(self):
-        """Rafraîchit la liste des catégories dans l'interface"""
+        """Rafraichit les dossiers de tri : icone de dossier + titre + nombre de photos."""
+        self.current_category = None
+        self.folder_back_btn.setVisible(False)
+        self.category_buttons_frame.setVisible(True)
         self.categories_list.clear()
-        for category_name, category_desc in self.config.CATEGORIES.items():
-            item = QListWidgetItem(f"{category_name}: {category_desc}")
+        for category_name in self.config.CATEGORIES:
+            folder = Path(self.config.DOSSIER_TRIES) / category_name
+            count = 0
+            if folder.exists():
+                count = len(self._image_files_in(folder))
+            item = QListWidgetItem(f"{category_name} ({count})")
             item.setData(Qt.UserRole, category_name)
+            item.setIcon(self._folder_icon())
             self.categories_list.addItem(item)
 
-    def browse_storage_path(self):
-        """Permet de changer le dossier de stockage principal"""
-        folder = QFileDialog.getExistingDirectory(
-            self, "Sélectionner le dossier de stockage", str(self.config.BASE_DIR)
-        )
-        if folder:
-            self.storage_path_input.setText(folder)
-            new_base_dir = Path(folder)
-            
-            # Mettre à jour les chemins (TAGS_FILE et CONFIG_FILE restent fixes)
-            self.config.BASE_DIR = new_base_dir
-            self.config.DOSSIER_A_TRIER = new_base_dir / "a_trier"
-            self.config.DOSSIER_TRIES = new_base_dir / "tries"
-            self.config.MODEL_SAVE_PATH = new_base_dir / "models"
-            
-            # Créer les répertoires
-            Config.ensure_directories()
-            
-            # Mettre à jour l'interface
-            self.entry_source.setText(str(self.config.DOSSIER_A_TRIER))
-            self.entry_output.setText(str(self.config.DOSSIER_TRIES))
-            
-            self.log_message(f"Dossier de stockage changé vers: {folder}")
-            self.settings_status.setText(f"\u2705 Dossier de stockage mis à jour: {folder}")
+    def _folder_icon(self):
+        """Icone de dossier standard du systeme."""
+        return QApplication.style().standardIcon(QStyle.SP_DirIcon)
+
+    def on_category_item_clicked(self, item):
+        """Clic dans le panneau : ouvre un dossier ou affiche une photo."""
+        if self.current_category is None:
+            self.open_category_folder(item.data(Qt.UserRole))
+        else:
+            path = item.data(Qt.UserRole)
+            if path:
+                self.show_in_preview(path)
+
+    def open_category_folder(self, category):
+        """Affiche les miniatures des photos triees d'un dossier de categorie."""
+        if not category:
+            return
+        self.current_category = category
+        self.folder_back_btn.setVisible(True)
+        self.category_buttons_frame.setVisible(False)
+        self.categories_list.clear()
+        folder = Path(self.config.DOSSIER_TRIES) / category
+        files = self._image_files_in(folder) if folder.exists() else []
+        for p in files:
+            entry = QListWidgetItem()
+            thumb = self.create_thumbnail(str(p), 80)
+            if thumb is not None:
+                entry.setIcon(QIcon(thumb))
+            entry.setData(Qt.UserRole, str(p))
+            entry.setToolTip(os.path.basename(str(p)))
+            self.categories_list.addItem(entry)
+        if files:
+            self.show_in_preview(str(files[0]))
+        else:
+            self.preview_viewport.clear_view()
+            self.sort_status_label.setText(f"Dossier '{category}' vide")
+
+    def show_folders_view(self):
+        """Revient a la liste des dossiers de tri."""
+        self.refresh_categories_list()
 
     def add_category(self):
         """Ajoute une nouvelle catégorie"""
@@ -802,33 +1295,14 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"Catégorie supprimée: {category_name}")
 
     def save_settings(self):
-        """Sauvegarde les paramètres actuels"""
-        # Mettre à jour le chemin de stockage
-        new_storage_path = self.storage_path_input.text().strip()
-        if new_storage_path and new_storage_path != str(self.config.BASE_DIR):
-            new_base_dir = Path(new_storage_path)
-            if new_base_dir.exists():
-                self.config.BASE_DIR = new_base_dir
-                self.config.DOSSIER_A_TRIER = new_base_dir / "a_trier"
-                self.config.DOSSIER_TRIES = new_base_dir / "tries"
-                self.config.MODEL_SAVE_PATH = new_base_dir / "models"
-                # TAGS_FILE et CONFIG_FILE restent fixes (dossier racine du projet)
-                
-                # Créer les répertoires
-                Config.ensure_directories()
-                
-                # Mettre à jour l'interface
-                self.entry_source.setText(str(self.config.DOSSIER_A_TRIER))
-                self.entry_output.setText(str(self.config.DOSSIER_TRIES))
-        
-        # Sauvegarder la configuration
+        """Sauvegarde les parametres actuels"""
         if self.save_current_config():
-            self.settings_status.setText("\u2705 Paramètres enregistrés avec succès!")
-            self.log_message("Paramètres enregistrés")
-            QMessageBox.information(self, "Succès", "Les paramètres ont été enregistrés avec succès!")
+            self.settings_status.setText("\u2705 Param\u00e8tres enregistr\u00e9s avec succ\u00e8s!")
+            self.log_message("Param\u00e8tres enregistr\u00e9s")
+            QMessageBox.information(self, "Succ\u00e8s", "Les param\u00e8tres ont \u00e9t\u00e9 enregistr\u00e9s avec succ\u00e8s!")
         else:
             self.settings_status.setText("\u274c Erreur lors de l'enregistrement")
-            QMessageBox.critical(self, "Erreur", "Impossible d'enregistrer les paramètres!")
+            QMessageBox.critical(self, "Erreur", "Impossible d'enregistrer les param\u00e8tres!")
 
     # ====================== CHARGEMENT DES MODÈLES ======================
     def load_models(self):
@@ -873,25 +1347,6 @@ class PhotoSorterApp(QMainWindow):
             )
 
     # ====================== NAVIGATION ======================
-    def browse_source(self):
-        folder = QFileDialog.getExistingDirectory(
-            self, "Sélectionner le dossier à trier", str(self.config.BASE_DIR)
-        )
-        if folder:
-            self.entry_source.setText(folder)
-            self.config.DOSSIER_A_TRIER = Path(folder)
-            self.log_message(f"Dossier à trier : {folder}")
-
-    def browse_output(self):
-        folder = QFileDialog.getExistingDirectory(
-            self, "Sélectionner le dossier de sortie", str(self.config.BASE_DIR)
-        )
-        if folder:
-            self.entry_output.setText(folder)
-            self.config.DOSSIER_TRIES = Path(folder)
-            self.log_message(f"Dossier de sortie : {folder}")
-
-
     def browse_folder_for_tags(self):
         """Parcourir un dossier pour chercher des images taguées"""
         folder = QFileDialog.getExistingDirectory(
@@ -1052,33 +1507,6 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"Tags pour {os.path.basename(image_path)}: {tags}")
         except Exception as e:
             self.log_message(f"\u26a0\ufe0f Erreur de chargement des tags: {e}")
-    def set_image_pixmap(self, pixmap):
-        """Affiche une pixmap dans le QGraphicsView"""
-        # ✅ Supprimer l'ancien item s'il existe
-        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-            self.graphics_scene.removeItem(self.graphics_pixmap_item)
-        
-        self.graphics_scene.clear()
-        
-        self.graphics_pixmap_item = self.graphics_scene.addPixmap(pixmap)
-        # ✅ Vérifier que l'item a été ajouté
-        if self.graphics_pixmap_item is None:
-            return
-        self.graphics_pixmap_item.setTransformationMode(Qt.SmoothTransformation)
-        # Réinitialiser la transformation de l'item (toujours à 1.0)
-        self.graphics_pixmap_item.setTransform(QTransform())
-        # Forcer la position à (0,0) pour éviter les décalages
-        self.graphics_pixmap_item.setPos(0, 0)
-        self.zoom_factor = 1.0
-        self.zoom_current = 1.0
-        self.zoom_target = 1.0
-        self.fit_in_view()
-
-    def clear_image(self):
-        """Efface l'image affichée"""
-        self.graphics_scene.clear()
-        self.graphics_pixmap_item = None
-
     def load_image(self, file_path):
         """Charge une image (y compris RAW) et retourne un QPixmap."""
         try:
@@ -1110,108 +1538,6 @@ class PhotoSorterApp(QMainWindow):
 
 
 
-    def fit_in_view(self):
-        """Adapte l'image au viewport avec centrage parfait."""
-        if not self.graphics_pixmap_item:
-            return
-        
-        # ✅ 1. Réinitialiser VUE + ITEM
-        self.graphics_view.setTransform(QTransform())
-        self.graphics_pixmap_item.setTransform(QTransform())
-        self.graphics_pixmap_item.setPos(0, 0)
-        
-        # ✅ 2. Définir le sceneRect à la taille exacte de l'image
-        #    (la vue "oublie" l'ancienne scène qui faussait fitInView)
-        item_rect = self.graphics_pixmap_item.boundingRect()
-        self.graphics_scene.setSceneRect(item_rect)
-        
-        # ✅ 3. Réinitialiser les scrollbars au centre avant fitInView
-        #    (évite que la position de défilement précédente influe sur le centrage)
-        self.graphics_view.horizontalScrollBar().setValue(0)
-        self.graphics_view.verticalScrollBar().setValue(0)
-        
-        # ✅ 4. fitInView : Qt calcule l'échelle ET le centrage en une seule opération
-        self.graphics_view.fitInView(item_rect, Qt.KeepAspectRatio)
-        
-        # ✅ 5. Récupérer le base_scale réel calculé par Qt
-        self.base_scale = self.graphics_view.transform().m11()
-        if self.base_scale <= 0:
-            self.base_scale = 1.0
-        
-        # Le zoom de la vue est à base_scale (100% = base_scale)
-        self.zoom_factor = 1.0
-        self.zoom_current = 1.0
-        self.zoom_target = 1.0
-
-    def zoom_in(self):
-        """Zoom avant sur la VUE avec 4 étapes."""
-        if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
-            new_zoom = self.zoom_current * self.zoom_step
-            if new_zoom <= self.max_zoom:
-                self.zoom_target = new_zoom
-                if not self.zoom_timer.isActive():
-                    self.zoom_timer.start()
-                    self.zoom_active = True
-
-    def zoom_out(self):
-        """Zoom arrière sur la VUE avec 4 étapes."""
-        if hasattr(self, 'graphics_pixmap_item') and not self.zoom_active:
-            new_zoom = self.zoom_current / self.zoom_step
-            if new_zoom >= self.min_zoom - 0.0001:
-                self.zoom_target = new_zoom
-                if not self.zoom_timer.isActive():
-                    self.zoom_timer.start()
-                    self.zoom_active = True
-
-    def zoom_reset(self):
-        """Réinitialise le zoom : refait fitInView pour un centrage parfait."""
-        self.zoom_factor = 1.0
-        self.zoom_target = 1.0
-        self.zoom_current = 1.0
-        if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-            # ✅ Revenir à fitInView (centrage + échelle parfaits)
-            self.fit_in_view()
-
-    def _apply_smooth_zoom(self):
-        """Applique le zoom SANS tremblements (centerOn UNIQUEMENT à la fin)."""
-        if not self.zoom_active or not self.graphics_pixmap_item:
-            self.zoom_timer.stop()
-            return
-
-        # Interpolation linéaire (30% de la distance)
-        self.zoom_current += (self.zoom_target - self.zoom_current) * 0.3
-
-        # ✅ Applique le zoom sur la vue (SANS recentrer à chaque tick)
-        if hasattr(self, 'base_scale'):
-            total_scale = self.base_scale * self.zoom_current
-            transform = QTransform().scale(total_scale, total_scale)
-            self.graphics_view.setTransform(transform)
-        else:
-            transform = QTransform().scale(self.zoom_current, self.zoom_current)
-            self.graphics_view.setTransform(transform)
-
-        # ✅ Pas de recentrage pendant le zoom (AnchorUnderMouse gère le centrage)
-        if abs(self.zoom_target - self.zoom_current) < 0.001:
-            self.zoom_current = self.zoom_target
-            self.zoom_factor = self.zoom_target
-            self.zoom_timer.stop()
-            self.zoom_active = False
-
-
-    def load_image_preview(self, image_path):
-        """Charge une image et l'affiche dans le preview."""
-        try:
-            # Charger l'image avec la fonction unifiée
-            pixmap = self.load_image(image_path)
-            if pixmap is not None and not pixmap.isNull():
-                self.set_image_pixmap(pixmap)
-                self.current_image_path = image_path
-            else:
-                raise ValueError(f"Impossible de charger l'image: {image_path}")
-        except Exception as e:
-            self.log_message(f"Erreur : {e}")
-            self.clear_image()
-
     # ====================== WATCHDOG ======================
     def toggle_watchdog(self, state):
         if state == Qt.Checked:
@@ -1236,6 +1562,8 @@ class PhotoSorterApp(QMainWindow):
     def on_file_detected(self, file_path):
         self.log_message(f"\ud83d\udcf7 Nouvelle photo détectée : {file_path}")
         self.classer_et_deplacer(file_path)
+        self.refresh_drop_zone()
+        self.refresh_categories_list()
 
 
     # ====================== TRI ET CLASSIFICATION ======================
@@ -1268,9 +1596,10 @@ class PhotoSorterApp(QMainWindow):
                     self.log_message(f"\u26a0\ufe0f Erreur d'ouverture de {chemin_image}: {e}")
                     return "autre"
 
-            # Redimensionner pour optimiser le traitement
-            if max(image.size) > 768:
-                image = image.resize((768, 768))
+            # Optimiser le traitement SANS deformater : orientation EXIF respectee,
+            # reduction en preservant le ratio (thumbnail ne fait qu'reduire)
+            image = ImageOps.exif_transpose(image)
+            image.thumbnail((768, 768), Image.Resampling.LANCZOS)
 
             image_embedding = self.model_clip.encode(image, convert_to_tensor=True)
             similarities = util.cos_sim(image_embedding, self.text_embeddings)[0]
@@ -1336,34 +1665,62 @@ class PhotoSorterApp(QMainWindow):
             self.log_message(f"\u26a0\ufe0f Erreur avec {chemin_image}: {e}")
 
     def trier_dossier_maintenant(self):
-        """Trie le dossier sélectionné maintenant"""
-        self.log_message("\ud83d\udcc1 Tri du dossier en cours...")
-        self.trier_dossier(str(self.config.DOSSIER_A_TRIER))
+        """Lance le tri du dossier a trier dans un thread separe."""
+        if self.tri_worker is not None and self.tri_worker.isRunning():
+            self.log_message("\u26a0\ufe0f Un tri est d\u00e9j\u00e0 en cours.")
+            return
+        files = self.collect_files_to_sort(self.config.DOSSIER_A_TRIER)
+        if not files:
+            self.log_message("Aucun fichier \u00e0 trier dans le dossier de d\u00e9p\u00f4t.")
+            self.sort_status_label.setText("Rien \u00e0 trier")
+            return
+        self.sort_progress.setVisible(True)
+        self.cancel_sort_btn.setVisible(True)
+        self.sort_progress.setMaximum(len(files))
+        self.sort_progress.setValue(0)
+        self.sort_status_label.setText(f"Tri en cours : 0 / {len(files)} photos")
+        self.log_message(f"\ud83d\udcc1 Tri de {len(files)} fichier(s)...")
+        self.tri_worker = TriWorker(self, files)
+        self.tri_worker.progress.connect(self.on_sort_progress)
+        self.tri_worker.finished_tri.connect(self.on_sort_finished)
+        self.tri_worker.error.connect(lambda m: self.log_message(f"\u26a0\ufe0f {m}"))
+        self.tri_worker.start()
 
-    def trier_dossier(self, dossier):
-        """Trie toutes les images dans un dossier"""
-        try:
-            files = []
-            for root, _, filenames in os.walk(dossier):
-                for filename in filenames:
-                    filepath = Path(root) / filename
-                    if filepath.suffix.lower() not in ['.thm', '.xmp', '.json']:
-                        files.append(filepath)
+    def collect_files_to_sort(self, dossier):
+        """Liste les fichiers a trier (tout sauf metadonnees), RAW d'abord."""
+        files = []
+        for root, _, filenames in os.walk(dossier):
+            for filename in filenames:
+                filepath = Path(root) / filename
+                if filepath.suffix.lower() in (self.config.IMAGE_EXTENSIONS | self.config.RAW_EXTENSIONS):
+                    files.append(filepath)
+        raw_files = [f for f in files if f.suffix.lower() in self.config.RAW_EXTENSIONS]
+        other_files = [f for f in files if f not in raw_files]
+        return raw_files + other_files
 
-            raw_files = [f for f in files if f.suffix.lower() in self.config.RAW_EXTENSIONS]
-            other_files = [f for f in files if f not in raw_files]
-            all_files = raw_files + other_files
+    def cancel_sort(self):
+        """Demande l'annulation du tri en cours."""
+        if self.tri_worker is not None and self.tri_worker.isRunning():
+            self.tri_worker.cancel()
+            self.sort_status_label.setText("Annulation en cours...")
+            self.log_message("\u26a0\ufe0f Annulation du tri demand\u00e9e")
 
-            self.log_message(f"\ud83d\udcc1 Trouvé {len(all_files)} fichier(s) à trier")
-            
-            for filepath in all_files:
-                self.log_message(f"\ud83d\udcf7 Tri de : {filepath}")
-                self.classer_et_deplacer(str(filepath))
-                
-        except Exception as e:
-            self.log_message(f"\u274c Erreur lors du tri : {e}")
+    def on_sort_progress(self, index, total, name):
+        self.sort_progress.setMaximum(total)
+        self.sort_progress.setValue(index)
+        if name:
+            self.sort_status_label.setText(f"Tri en cours : {index} / {total} photos")
 
-
+    def on_sort_finished(self, done, errors):
+        self.sort_progress.setVisible(False)
+        self.cancel_sort_btn.setVisible(False)
+        msg = f"Tri termin\u00e9 : {done} tri\u00e9(s)"
+        if errors:
+            msg += f", {errors} erreur(s)"
+        self.sort_status_label.setText(msg)
+        self.log_message(f"\u2705 {msg}")
+        self.refresh_drop_zone()
+        self.refresh_categories_list()
 
     def search_by_tag(self):
         """Recherche des images par tag (utilise par scan_folder, delegue vers display_images_by_tag)"""
@@ -1372,81 +1729,35 @@ class PhotoSorterApp(QMainWindow):
             self.display_images_by_tag(tag)
 
     def load_image_from_results(self, item):
-        """Charge une image depuis les résultats de recherche (clic sur miniature)"""
+        """Affiche une image des resultats dans le viewport unique (onglet Tri)."""
         image_path = item.data(Qt.UserRole)
         if image_path:
-            self.load_image_preview(image_path)
+            self.tabs.setCurrentWidget(self.tri_tab)
+            self.show_in_preview(image_path)
             self.load_image_tags(image_path)
 
 
 
 
-    def mousePressEvent(self, event):
-        """Gère le clic de la souris pour le déplacement (bouton droit)."""
-        if event.button() == Qt.RightButton:
-            self.right_button_pressed = True
-            self.last_mouse_pos = event.localPos()
-            self.graphics_view.setCursor(Qt.ClosedHandCursor)
-            event.accept()
-        else:
-            super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        """Gère le déplacement de la souris avec le bouton droit enfoncé."""
-        if self.right_button_pressed and hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-            delta = event.localPos() - self.last_mouse_pos
-            self.last_mouse_pos = event.localPos()
-            
-            self.graphics_view.setUpdatesEnabled(False)
-            # Déplacement dans la direction de la souris (pas inversé)
-            self.graphics_pixmap_item.moveBy(delta.x(), delta.y())
-            self.graphics_view.setUpdatesEnabled(True)
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        """Gère le relâchement du bouton droit de la souris."""
-        if event.button() == Qt.RightButton:
-            self.right_button_pressed = False
-            self.graphics_view.setCursor(Qt.ArrowCursor)
-            event.accept()
-        else:
-            super().mouseReleaseEvent(event)
-
     def eventFilter(self, obj, event):
-        """Filtre les événements pour le viewport du QGraphicsView (molette = zoom, bouton droit = déplacement)."""
-        if obj == self.graphics_view.viewport():
-            # ✅ MOLETTE : Zoom avec la molette (uniquement zoom avant)
-            if event.type() == QEvent.Type.Wheel:
-                delta = event.angleDelta().y()
-                if delta > 0:
-                    self.zoom_in()
-                # Molette bas : ignorée (pas de zoom arrière)
+        """Filtre les événements : dépôt glisser-déposer sur la zone de dépôt."""
+        # Depot sur toute la zone de dépôt (cadre compris)
+        if obj == getattr(self, 'drop_group', None):
+            if event.type() == QEvent.DragEnter or event.type() == QEvent.DragMove:
+                if event.mimeData().hasUrls():
+                    event.acceptProposedAction()
+                    return True
+            elif event.type() == QEvent.Drop:
+                paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+                if paths:
+                    self.on_files_dropped(paths)
+                event.acceptProposedAction()
                 return True
-            # ✅ BOUTON DROIT : Déplacement
-            elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.RightButton:
-                self.right_button_pressed = True
-                self.last_mouse_pos = event.localPos()
-                self.graphics_view.setCursor(Qt.ClosedHandCursor)
-                event.accept()
-                return True
-            elif event.type() == QEvent.Type.MouseMove and self.right_button_pressed:
-                if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-                    delta = event.localPos() - self.last_mouse_pos
-                    self.last_mouse_pos = event.localPos()
-                    
-                    self.graphics_view.setUpdatesEnabled(False)
-                    self.graphics_pixmap_item.moveBy(delta.x(), delta.y())
-                    self.graphics_view.setUpdatesEnabled(True)
-                event.accept()
-                return True
-            elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.RightButton:
-                self.right_button_pressed = False
-                self.graphics_view.setCursor(Qt.ArrowCursor)
-                event.accept()
-                return True
-
+        # Bouton plein ecran : suivre le coin bas-droit du viewport
+        if obj == getattr(self, 'preview_viewport', None) and event.type() == QEvent.Resize:
+            btn = getattr(self, 'fullscreen_btn', None)
+            if btn is not None:
+                btn.move(obj.width() - btn.width() - 12, obj.height() - btn.height() - 12)
         return super().eventFilter(obj, event)
 
     # ====================== DUMP UI (DEBUG) ======================
@@ -1502,10 +1813,10 @@ class PhotoSorterApp(QMainWindow):
             lines.append("")
             lines.append("--- ETAT INTERNE ---")
             lines.append(f"Image courante: {self.current_image_path}")
-            lines.append(f"Zoom: factor={self.zoom_factor} current={self.zoom_current} target={self.zoom_target} base_scale={getattr(self, 'base_scale', None)}")
-            if hasattr(self, 'graphics_pixmap_item') and self.graphics_pixmap_item:
-                r = self.graphics_pixmap_item.boundingRect()
-                lines.append(f"Pixmap: pos=({self.graphics_pixmap_item.x():.1f}, {self.graphics_pixmap_item.y():.1f}) taille=({r.width():.0f}x{r.height():.0f})")
+            lines.append(f"Dossier affiche (panneau tri): {self.current_category}")
+            if getattr(self, 'preview_viewport', None) and self.preview_viewport.pixmap_item:
+                r = self.preview_viewport.pixmap_item.boundingRect()
+                lines.append(f"Pixmap (viewport): taille=({r.width():.0f}x{r.height():.0f})")
             else:
                 lines.append("Pixmap: aucun")
             lines.append(f"BASE_DIR: {self.config.BASE_DIR}")
