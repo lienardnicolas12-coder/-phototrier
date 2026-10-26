@@ -384,7 +384,12 @@ class ShineProgressBar(QProgressBar):
 
 # ====================== LECTURE PLEIN ECRAN ======================
 class FullScreenViewer(QWidget):
-    """Affichage plein ecran d'une photo (Echap ou double-clic pour fermer)."""
+    """Plein ecran avec transition d'agrandissement de l'image.
+
+    La fenetre reste en plein ecran pendant toute la duree : seul l'item graphique
+    est anime (echelle + position). On evite ainsi le flou et le doublement causes
+    par le redimensionnement d'une fenetre Windows.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -396,51 +401,88 @@ class FullScreenViewer(QWidget):
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.view.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        self.view.setDragMode(QGraphicsView.NoDrag)
         self.scene = QGraphicsScene(self.view)
         self.view.setScene(self.scene)
         layout.addWidget(self.view)
+        self._item = None
+        self._origin_geo = None
+        self._zoom_from = None
+        self._zoom_to = None
+        self._zoom_anim = QVariantAnimation(self)
+        self._zoom_anim.setDuration(350)
+        self._zoom_anim.setStartValue(0.0)
+        self._zoom_anim.setEndValue(1.0)
+        self._zoom_anim.valueChanged.connect(self._apply_zoom)
+
+    def _fit_geometry(self):
+        """Retourne (scale, x, y) pour centrer l'item dans le viewport."""
+        if self._item is None:
+            return None
+        w = self._item.boundingRect().width()
+        h = self._item.boundingRect().height()
+        vw = max(1, self.view.viewport().width())
+        vh = max(1, self.view.viewport().height())
+        scale = min(vw / w, vh / h)
+        return (scale, (vw - w * scale) / 2.0, (vh - h * scale) / 2.0)
+
+    def _apply_zoom(self, value):
+        if self._item is None or self._zoom_from is None or self._zoom_to is None:
+            return
+        t = float(value)
+        s0, x0, y0 = self._zoom_from
+        s1, x1, y1 = self._zoom_to
+        self._item.setScale(s0 + (s1 - s0) * t)
+        self._item.setPos(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)
+
+    def _run_zoom(self, target, on_finished=None):
+        self._zoom_from = (self._item.scale(), self._item.x(), self._item.y())
+        self._zoom_to = target
+        try:
+            self._zoom_anim.finished.disconnect()
+        except TypeError:
+            pass
+        if on_finished is not None:
+            self._zoom_anim.finished.connect(on_finished)
+        self._zoom_anim.start()
 
     def show_pixmap(self, pixmap, origin_rect=None):
-        """Affiche la pixmap en plein ecran avec transition d'agrandissement."""
+        """Affiche la pixmap en plein ecran, transition depuis origin_rect si fourni."""
         if pixmap is None or pixmap.isNull():
             return
+        self._zoom_anim.stop()
         self.scene.clear()
-        item = self.scene.addPixmap(pixmap)
-        item.setTransformationMode(Qt.SmoothTransformation)
-        self.scene.setSceneRect(QRectF(pixmap.rect()))
-        screen = QApplication.primaryScreen().availableGeometry()
-        self._origin_rect = QRect(origin_rect) if origin_rect is not None else None
-        self.setGeometry(origin_rect if origin_rect is not None else screen)
-        self.show()
+        self._item = self.scene.addPixmap(pixmap)
+        self._item.setTransformationMode(Qt.SmoothTransformation)
+        self.showFullScreen()
         self.raise_()  # premier plan
-        self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+        target = self._fit_geometry()
+        if target is None:
+            return
+        self._zoom_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._origin_geo = None
         if origin_rect is not None:
-            # Transition : la fenetre s'agrandit du rectangle d'origine vers l'ecran
-            self._expand_anim = QPropertyAnimation(self, b"geometry")
-            self._expand_anim.setDuration(350)
-            self._expand_anim.setStartValue(QRect(origin_rect))
-            self._expand_anim.setEndValue(screen)
-            self._expand_anim.setEasingCurve(QEasingCurve.OutCubic)
-            self._expand_anim.valueChanged.connect(
-                lambda *_: self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio))
-            self._expand_anim.start()
+            w = self._item.boundingRect().width()
+            if w > 0:
+                top_left = self.geometry().topLeft()
+                s0 = origin_rect.width() / w
+                x0 = float(origin_rect.x() - top_left.x())
+                y0 = float(origin_rect.y() - top_left.y())
+                self._origin_geo = (s0, x0, y0)
+                self._item.setScale(s0)
+                self._item.setPos(x0, y0)
+                self._run_zoom(target)
+        else:
+            self._item.setScale(target[0])
+            self._item.setPos(target[1], target[2])
 
     def close_to_origin(self):
-        """Ferme avec la transition inverse : reduction vers la previsualisation."""
-        origin = getattr(self, '_origin_rect', None)
-        if origin is None:
-            self.close()
+        """Transition inverse : l'image se reduit vers son rectangle d'origine puis fermeture."""
+        if self._item is None or self._origin_geo is None:
+            self.hide()
             return
-        self._expand_anim = QPropertyAnimation(self, b"geometry")
-        self._expand_anim.setDuration(350)
-        self._expand_anim.setStartValue(self.geometry())
-        self._expand_anim.setEndValue(origin)
-        self._expand_anim.setEasingCurve(QEasingCurve.InOutCubic)
-        self._expand_anim.valueChanged.connect(
-            lambda *_: self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio))
-        self._expand_anim.finished.connect(self.hide)
-        self._expand_anim.start()
+        self._zoom_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._run_zoom(self._origin_geo, on_finished=self.hide)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -450,6 +492,7 @@ class FullScreenViewer(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         self.close_to_origin()
+
 
 
 # ====================== VIEWPORT DE PREVISUALISATION ======================
@@ -1317,7 +1360,10 @@ class PhotoSorterApp(QMainWindow):
         if not viewport or not viewport.pixmap_item:
             self.log_message("Aucune photo a afficher en plein ecran")
             return
-        origin = QRect(viewport.mapToGlobal(QPoint(0, 0)), viewport.size())
+        view = viewport.view
+        rect = QRectF(view.mapFromScene(viewport.pixmap_item.boundingRect()).boundingRect())
+        top_left = view.viewport().mapToGlobal(rect.topLeft().toPoint())
+        origin = QRect(top_left, rect.toRect().size())
         self.fullscreen_viewer.show_pixmap(viewport.pixmap_item.pixmap(), origin)
 
     def _position_fullscreen_btn(self):
@@ -1440,6 +1486,11 @@ class PhotoSorterApp(QMainWindow):
         image_path = getattr(self, 'current_image_path', None)
         if not image_path or not os.path.exists(image_path):
             self.log_message("Aucune image affichée")
+            QMessageBox.information(
+                self, "Supprimer l'image",
+                "Aucune image affichée en prévisualisation.\n"
+                "Cliquez d'abord sur une photo pour la sélectionner, "
+                "puis utilisez le menu Édition ou Ctrl+Del.")
             return
         confirm = QMessageBox.question(
             self, "Confirmer la suppression",
@@ -1465,8 +1516,10 @@ class PhotoSorterApp(QMainWindow):
                 self.show_in_preview(nav[self._nav_index])
             else:
                 self.preview_viewport.clear_view()
+                self.current_image_path = None
         else:
             self.preview_viewport.clear_view()
+            self.current_image_path = None
         self.refresh_drop_zone()
         self.refresh_categories_list()
         self.refresh_tags_list()
@@ -1713,8 +1766,20 @@ class PhotoSorterApp(QMainWindow):
     def create_thumbnail(self, image_path, size=120):
         """Cree une miniature QPixmap a partir d'un chemin d'image.
         Utilise PIL pour generer un JPEG en memoire -> loadFromData force une copie complete.
+        Les miniatures sont mises en cache (chemin + mtime + taille) pour eviter
+        de re-decoder chaque image a chaque rafraichissement de l'interface.
        """
         try:
+            cache = getattr(self, '_thumb_cache', None)
+            if cache is None:
+                cache = self._thumb_cache = {}
+            key = None
+            try:
+                key = (str(image_path).lower(), os.path.getmtime(image_path), size)
+            except OSError:
+                key = None
+            if key is not None and key in cache:
+                return cache[key]
             if image_path.lower().endswith(tuple(self.config.RAW_EXTENSIONS)):
                 with rawpy.imread(image_path) as raw:
                     rgb_array = raw.postprocess(half_size=True)
@@ -1739,7 +1804,10 @@ class PhotoSorterApp(QMainWindow):
 
             if pixmap.isNull():
                 return None
-            return pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            result = pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            if key is not None:
+                cache[key] = result
+            return result
         except Exception as e:
             logging.debug(f"Erreur miniature {image_path}: {e}")
             return None
