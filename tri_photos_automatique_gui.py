@@ -2,6 +2,7 @@ import os
 import shutil
 import json
 import rawpy
+import math
 import logging
 import sys
 import numpy as np
@@ -14,7 +15,7 @@ from PyQt5.QtWidgets import (
     QRadioButton, QSizePolicy, QTabWidget, QTextEdit, QVBoxLayout,
     QHBoxLayout, QWidget, QMainWindow, QScrollArea, QGraphicsPixmapItem,
     QGraphicsItem, QSpacerItem, QButtonGroup, QToolButton, QShortcut, QProgressBar, QStyle,
-    QSplitter, QStyleOptionButton
+    QSplitter, QStyleOptionButton, QDockWidget, QCompleter
 )
 from PyQt5.QtGui import (
     QPixmap, QImage, QPainter, QIcon, QFont, QColor,
@@ -23,7 +24,8 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtCore import (
     Qt, QPoint, QPointF, QSize, QRect, QRectF, pyqtSignal,
-    QThread, QObject, QTimer, QEvent, QMargins, QSizeF, QDateTime, QVariantAnimation
+    QThread, QObject, QTimer, QEvent, QMargins, QSizeF, QDateTime, QVariantAnimation,
+    QPropertyAnimation, QEasingCurve, QStringListModel
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from sentence_transformers import SentenceTransformer, util
@@ -190,15 +192,25 @@ class DropZone(QListWidget):
 
 # ====================== BOUTONS ET PROGRESSION ANIMES ======================
 class ShineButton(QPushButton):
-    """Bouton avec un reflet blanc balayant de gauche a droite au clic."""
+    """Bouton anime : au clic, reflet sur les lettres + fondu du texte avec lueur decroissante."""
+
+    CYCLE_MS = 1000
 
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
         self._shine = -1.0
+        self._text_alpha = 1.0
+        self._glow = 0.0
+        self._fading = False
         self._anim = QVariantAnimation(self)
         self._anim.setDuration(600)
         self._anim.valueChanged.connect(self._set_shine)
+        self._fade_anim = QVariantAnimation(self)
+        self._fade_anim.setDuration(self.CYCLE_MS)
+        self._fade_anim.valueChanged.connect(self._set_fade_value)
+        self._fade_anim.finished.connect(self._fade_finished)
         self.clicked.connect(self.start_shine)
+        self.clicked.connect(self.start_text_fade)
 
     def start_shine(self):
         self._anim.stop()
@@ -206,18 +218,47 @@ class ShineButton(QPushButton):
         self._anim.setEndValue(1.0)
         self._anim.start()
 
+    def start_text_fade(self):
+        """Lance un cycle de fondu du texte (uniquement pendant le clic)."""
+        self._fade_anim.stop()
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fading = True
+        self._fade_anim.start()
+
     def _set_shine(self, value):
         self._shine = float(value)
         self.update()
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        if self._shine < 0.0 or self._shine > 1.0:
-            return
+    @staticmethod
+    def _keyframe_alpha(t):
+        """0-40% blanc ; 40-75% fondu vers 15% ; 75-90% vers 0 ; 90-100% retour au blanc."""
+        def ease(u):
+            return (1.0 - math.cos(math.pi * u)) / 2.0
+
+        if t < 0.40:
+            return 1.0
+        if t < 0.75:
+            return 1.0 - 0.85 * ease((t - 0.40) / 0.35)
+        if t < 0.90:
+            return 0.15 * (1.0 - ease((t - 0.75) / 0.15))
+        return ease((t - 0.90) / 0.10)
+
+    def _set_fade_value(self, value):
+        t = float(value)
+        self._text_alpha = self._keyframe_alpha(t)
+        self._glow = 150.0 * (1.0 - t)  # lueur forte au clic, decroissante jusqu'a zero
+        self.update()
+
+    def _fade_finished(self):
+        self._fading = False
+        self._text_alpha = 1.0
+        self._glow = 0.0
+        self.update()
+
+    def _text_rect(self):
+        """Rectangle reel du texte (decalage icone compris)."""
         text = self.text()
-        if not text:
-            return
-        # Rectangle reel du texte (decalage icone compris) : le reflet ne touche que les lettres
         opt = QStyleOptionButton()
         opt.initFrom(self)
         opt.text = text
@@ -230,7 +271,42 @@ class ShineButton(QPushButton):
         icon_w = icon.actualSize(QSize(16, 16)).width() + 4 if not icon.isNull() else 0
         block_w = icon_w + text_w
         x0 = contents.left() + max(0, (contents.width() - block_w) // 2) + icon_w
-        text_rect = QRect(x0, contents.center().y() - text_h // 2, text_w, text_h)
+        return QRect(x0, contents.center().y() - text_h // 2, text_w, text_h)
+
+    def paintEvent(self, event):
+        if not getattr(self, "_fading", False):
+            # Etat de repos et fallback : rendu Qt standard, texte blanc statique
+            super().paintEvent(event)
+        else:
+            painter = QPainter(self)
+            opt = QStyleOptionButton()
+            opt.initFrom(self)
+            opt.text = ""
+            opt.icon = self.icon()
+            self.style().drawControl(QStyle.CE_PushButton, opt, painter, self)
+            text = self.text()
+            if text:
+                rect = self._text_rect()
+                painter.setFont(self.font())
+                # Lueur decroissante autour des lettres
+                if self._glow > 0.5:
+                    painter.setPen(QColor(255, 255, 255, min(255, int(self._glow))))
+                    for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2),
+                                   (-1, -1), (1, 1), (-1, 1), (1, -1)):
+                        painter.drawText(rect.adjusted(dx, dy, dx, dy), Qt.AlignCenter, text)
+                # Texte dont l'opacite suit le cycle de fondu
+                if self._text_alpha > 0.001:
+                    painter.setOpacity(self._text_alpha)
+                    painter.setPen(QColor(255, 255, 255))
+                    painter.drawText(rect, Qt.AlignCenter, text)
+            painter.end()
+        # Reflet au clic : balaye les lettres uniquement
+        if 0.0 <= self._shine <= 1.0 and self.text():
+            self._paint_shine()
+
+    def _paint_shine(self):
+        text_rect = self._text_rect()
+        text_w = text_rect.width()
         band = max(24.0, text_w * 0.5)
         x = text_rect.left() - band + (text_w + band) * self._shine
         painter = QPainter(self)
@@ -244,11 +320,14 @@ class ShineButton(QPushButton):
 
 
 class ShineProgressBar(QProgressBar):
-    """Barre de progression avec un reflet blanc en mouvement continu."""
+    """Barre de progression : reflet mobile + pulsation du remplissage (3 s par cycle)."""
+
+    CYCLE_MS = 3000
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._shine = 0.0
+        self._pulse = 0.0
         self._anim = QVariantAnimation(self)
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
@@ -256,22 +335,45 @@ class ShineProgressBar(QProgressBar):
         self._anim.setLoopCount(-1)
         self._anim.valueChanged.connect(self._set_shine)
         self._anim.start()
+        self._pulse_anim = QVariantAnimation(self)
+        self._pulse_anim.setStartValue(0.0)
+        self._pulse_anim.setEndValue(1.0)
+        self._pulse_anim.setDuration(self.CYCLE_MS)
+        self._pulse_anim.setLoopCount(-1)
+        self._pulse_anim.valueChanged.connect(self._set_pulse)
+        try:
+            self._pulse_anim.start()
+        except Exception:
+            self._pulse = 0.0  # fallback : remplissage statique
 
     def _set_shine(self, value):
         self._shine = float(value)
         self.update()
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
+    def _set_pulse(self, value):
+        self._pulse = float(value)
+        self.update()
+
+    def _filled_width(self):
         total = self.maximum() - self.minimum()
         if total <= 0:
-            return
-        filled = (self.width() - 4) * (self.value() - self.minimum()) / float(total)
+            return 0.0
+        return (self.width() - 4) * (self.value() - self.minimum()) / float(total)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        filled = self._filled_width()
         if filled < 8:
             return
+        painter = QPainter(self)
+        # Pulsation : remplissage blanc dont l'opacite oscille (jamais < 0.4)
+        u = (1.0 - math.cos(2.0 * math.pi * self._pulse)) / 2.0
+        painter.setOpacity(0.4 + 0.6 * u)
+        painter.fillRect(QRectF(2.0, 2.0, filled, float(self.height() - 4)), QColor(255, 255, 255))
+        # Reflet blanc mobile par-dessus
         band = max(30.0, filled * 0.4)
         x = -band + (filled + band) * self._shine
-        painter = QPainter(self)
+        painter.setOpacity(1.0)
         gradient = QLinearGradient(x, 0.0, x + band, 0.0)
         gradient.setColorAt(0.0, QColor(255, 255, 255, 0))
         gradient.setColorAt(0.5, QColor(255, 255, 255, 70))
@@ -299,25 +401,55 @@ class FullScreenViewer(QWidget):
         self.view.setScene(self.scene)
         layout.addWidget(self.view)
 
-    def show_pixmap(self, pixmap):
-        """Affiche la pixmap en plein ecran, adaptee a l'ecran."""
+    def show_pixmap(self, pixmap, origin_rect=None):
+        """Affiche la pixmap en plein ecran avec transition d'agrandissement."""
         if pixmap is None or pixmap.isNull():
             return
         self.scene.clear()
         item = self.scene.addPixmap(pixmap)
         item.setTransformationMode(Qt.SmoothTransformation)
         self.scene.setSceneRect(QRectF(pixmap.rect()))
-        self.showFullScreen()
+        screen = QApplication.primaryScreen().availableGeometry()
+        self._origin_rect = QRect(origin_rect) if origin_rect is not None else None
+        self.setGeometry(origin_rect if origin_rect is not None else screen)
+        self.show()
+        self.raise_()  # premier plan
         self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+        if origin_rect is not None:
+            # Transition : la fenetre s'agrandit du rectangle d'origine vers l'ecran
+            self._expand_anim = QPropertyAnimation(self, b"geometry")
+            self._expand_anim.setDuration(350)
+            self._expand_anim.setStartValue(QRect(origin_rect))
+            self._expand_anim.setEndValue(screen)
+            self._expand_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._expand_anim.valueChanged.connect(
+                lambda *_: self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio))
+            self._expand_anim.start()
+
+    def close_to_origin(self):
+        """Ferme avec la transition inverse : reduction vers la previsualisation."""
+        origin = getattr(self, '_origin_rect', None)
+        if origin is None:
+            self.close()
+            return
+        self._expand_anim = QPropertyAnimation(self, b"geometry")
+        self._expand_anim.setDuration(350)
+        self._expand_anim.setStartValue(self.geometry())
+        self._expand_anim.setEndValue(origin)
+        self._expand_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._expand_anim.valueChanged.connect(
+            lambda *_: self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio))
+        self._expand_anim.finished.connect(self.hide)
+        self._expand_anim.start()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
-            self.close()
+            self.close_to_origin()
         else:
             super().keyPressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        self.close()
+        self.close_to_origin()
 
 
 # ====================== VIEWPORT DE PREVISUALISATION ======================
@@ -390,6 +522,15 @@ class ImageViewport(QWidget):
                     self.zoom_timer.start()
                     self.zoom_active = True
 
+    def zoom_out(self):
+        if self.pixmap_item and not self.zoom_active:
+            new_zoom = self.zoom_current / self.zoom_step
+            if new_zoom >= 1.0:
+                self.zoom_target = new_zoom
+                if not self.zoom_timer.isActive():
+                    self.zoom_timer.start()
+                    self.zoom_active = True
+
     def zoom_reset(self):
         self.zoom_current = 1.0
         self.zoom_target = 1.0
@@ -413,6 +554,8 @@ class ImageViewport(QWidget):
             if event.type() == QEvent.Type.Wheel:
                 if event.angleDelta().y() > 0:
                     self.zoom_in()
+                else:
+                    self.zoom_out()
                 return True
             elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.RightButton:
                 self.right_button_pressed = True
@@ -476,13 +619,19 @@ class TagManager:
         self.tags_file = Path(tags_file)
         self.tags = self._load_tags()
 
+    @staticmethod
+    def _norm(path):
+        """Normalise la casse d'un chemin : les cles restent coherentes
+        quel que soit le mode de lancement de l'application (c:/ ou C:\)."""
+        return os.path.normcase(str(path))
+
     def _load_tags(self):
         if self.tags_file.exists():
             try:
                 with open(self.tags_file, 'r', encoding='utf-8') as f:
                     loaded_tags = json.load(f)
                     # Convertir les listes en sets pour une gestion optimale
-                    return {path: set(tags) for path, tags in loaded_tags.items()}
+                    return {self._norm(path): set(tags) for path, tags in loaded_tags.items()}
             except json.JSONDecodeError as e:
                 logging.error(f"❌ Erreur de syntaxe JSON dans tags.json: {e}. Le fichier sera réinitialisé.")
                 # Réinitialiser le fichier avec un JSON vide
@@ -506,7 +655,7 @@ class TagManager:
             logging.error(f"Erreur de sauvegarde des tags: {e}")
 
     def add_tag(self, image_path, tag):
-        image_path = str(image_path)
+        image_path = self._norm(image_path)
         # Reutiliser l'orthographe d'un tag existant (casse ignoree) pour eviter les doublons
         for known in self.get_all_tags():
             if known.lower() == tag.lower():
@@ -519,8 +668,8 @@ class TagManager:
 
     def migrate_tags(self, old_path, new_path):
         """Transfere les tags vers le nouveau chemin d'une image deplacee"""
-        old_path = str(old_path)
-        new_path = str(new_path)
+        old_path = self._norm(old_path)
+        new_path = self._norm(new_path)
         if old_path == new_path:
             return
         if old_path in self.tags:
@@ -529,7 +678,7 @@ class TagManager:
             self._save_tags()
 
     def remove_tag(self, image_path, tag):
-        image_path = str(image_path)
+        image_path = self._norm(image_path)
         if image_path in self.tags and tag in self.tags[image_path]:
             self.tags[image_path].remove(tag)
             if not self.tags[image_path]:
@@ -537,7 +686,7 @@ class TagManager:
             self._save_tags()
 
     def get_tags(self, image_path):
-        image_path = str(image_path)
+        image_path = self._norm(image_path)
         return list(self.tags.get(image_path, set()))
 
     def get_all_tags(self):
@@ -561,7 +710,7 @@ class PhotoSorterApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PhotoTrier")
-        self.setGeometry(100, 100, 1000, 700)
+        self.setGeometry(100, 100, 1400, 900)
         try:
             self.setWindowIcon(QIcon("logo.ico"))
         except:
@@ -601,7 +750,7 @@ class PhotoSorterApp(QMainWindow):
             QCheckBox, QRadioButton { spacing: 8px; color: #CCCCCC; background-color: transparent; }
             QProgressBar { background-color: #252526; border: 1px solid #333333; border-radius: 6px;
                           text-align: center; color: #FFFFFF; }
-            QProgressBar::chunk { background-color: #0078D4; border-radius: 5px; }
+            QProgressBar::chunk { background-color: #252526; border-radius: 5px; }
             QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
             QScrollBar::handle:vertical { background: #333333; border-radius: 5px; min-height: 24px; }
             QScrollBar::handle:vertical:hover { background: #0078D4; }
@@ -611,8 +760,13 @@ class PhotoSorterApp(QMainWindow):
             QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
             QSplitter::handle { background-color: #2A2A2A; }
             QSplitter::handle:hover { background-color: rgba(255, 255, 255, 60); }
-            QSplitter::handle:horizontal { height: 4px; margin: 2px 1px; }
-            QSplitter::handle:vertical { height: 4px; margin: 1px 2px; }
+            QSplitter::handle:horizontal { width: 6px; margin: 2px 1px; }
+            QSplitter::handle:vertical { height: 6px; margin: 1px 2px; }
+            QMenuBar { background-color: #1A1A1A; color: #CCCCCC; }
+            QMenuBar::item:selected { background-color: rgba(255, 255, 255, 30); }
+            QMenu { background-color: #1E1E1E; color: #FFFFFF; border: 1px solid #333333; border-radius: 8px; }
+            QMenu::item:selected { background-color: rgba(255, 255, 255, 30); }
+            QDockWidget::title { background-color: #1E1E1E; color: #FFFFFF; border: 1px solid #333333; padding: 4px; }
             QToolTip { background-color: #252526; color: #FFFFFF; border: 1px solid #333333;
                        border-radius: 6px; padding: 4px; }
         """)
@@ -628,15 +782,14 @@ class PhotoSorterApp(QMainWindow):
 
         self.current_image_path = None
         self.current_category = None
+        self._nav_files = []
+        self._nav_index = 0
 
         # Attributs de l'interface
         self.log_text = None
         self.check_watch = None
         self.new_tag_input = None
-        self.tag_search = None
-        self.search_results = None
         self.current_tags_label = None
-        self.folder_path_input = None
 
         # Attributs pour les parametres
         self.categories_list = None
@@ -719,36 +872,120 @@ class PhotoSorterApp(QMainWindow):
 
     # ====================== INIT UI ======================
     def init_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(20)
-
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-
         self.setup_tri_tab()
-        self.setup_tags_tab()
         self.refresh_tags_list()
+        # Synchroniser le bouton Journal avec l'etat restaure du dock
+        self.log_toggle_btn.setChecked(self.journal_dock.isVisible())
+
+    def closeEvent(self, event):
+        """Sauvegarde la disposition des panneaux avant la fermeture."""
+        self.save_window_state()
+        super().closeEvent(event)
+
+    def save_window_state(self):
+        """Sauvegarde la disposition des docks et la geometrie de la fenetre."""
+        try:
+            saved = Config.load_config()
+            saved['window_state'] = bytes(self.saveState()).decode('latin1')
+            saved['window_geometry'] = bytes(self.saveGeometry()).decode('latin1')
+            Config.save_config(saved)
+        except Exception as e:
+            logging.error(f"Erreur de sauvegarde de la disposition: {e}")
+
+    def restore_window_state(self):
+        """Restaure la disposition des panneaux sauvegardee."""
+        try:
+            saved = Config.load_config()
+            if 'window_geometry' in saved:
+                self.restoreGeometry(saved['window_geometry'].encode('latin1'))
+            if 'window_state' in saved:
+                self.restoreState(saved['window_state'].encode('latin1'))
+        except Exception as e:
+            logging.error(f"Erreur de restauration de la disposition: {e}")
 
     def setup_tri_tab(self):
-        """Onglet : zone de depot, dossiers de tri, previsualisation, progression."""
-        self.tri_tab = QWidget()
-        self.tabs.addTab(self.tri_tab, "\ud83d\udcf7 Tri & Parametres")
-        main_layout = QVBoxLayout(self.tri_tab)
-        main_layout.setSpacing(20)
+        """Interface a panneaux ancrables (docks) : deplacer, redimensionner, detacher."""
+        # --- Panneau central : previsualisation + progression ---
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(10, 10, 10, 10)
+        central_layout.setSpacing(10)
 
-        # ========== DISPOSITION : preview en haut (2/3), depot + dossiers en bas (1/3) ==========
-        # Deux splitters : redimensionnement manuel des zones
-        self.tri_splitter = QSplitter(Qt.Vertical)
-        self.tri_splitter.setChildrenCollapsible(False)
-        self.bottom_splitter = QSplitter(Qt.Horizontal)
-        self.bottom_splitter.setChildrenCollapsible(False)
+        self.preview_viewport = ImageViewport()
+        central_layout.addWidget(self.preview_viewport, 1)
 
-        # --- Zone de depot glisser-deposer ---
-        drop_group = QGroupBox("Zone de d\u00e9p\u00f4t (glisser-d\u00e9poser)")
-        drop_layout = QVBoxLayout(drop_group)
+        progress_row = QHBoxLayout()
+        self.sort_progress = ShineProgressBar()
+        self.sort_progress.setTextVisible(False)
+        self.sort_progress.setVisible(False)
+        progress_row.addWidget(self.sort_progress, 1)
+        self.sort_status_label = QLabel("Prêt.")
+        progress_row.addWidget(self.sort_status_label)
+        self.cancel_sort_btn = ShineButton("Annuler")
+        self.cancel_sort_btn.setVisible(False)
+        self.cancel_sort_btn.clicked.connect(self.cancel_sort)
+        progress_row.addWidget(self.cancel_sort_btn)
+        self.log_toggle_btn = ShineButton("Journal")
+        self.log_toggle_btn.setCheckable(True)
+        self.log_toggle_btn.toggled.connect(self.toggle_journal)
+        progress_row.addWidget(self.log_toggle_btn)
+        self.debug_dump_btn = ShineButton("Debug")
+        self.debug_dump_btn.setToolTip("Enregistre un dump de l'interface (debug_ui/)")
+        self.debug_dump_btn.clicked.connect(self.dump_ui_state)
+        progress_row.addWidget(self.debug_dump_btn)
+        central_layout.addLayout(progress_row)
+        self.setCentralWidget(central)
+
+        # Boutons superposes sur la photo : precedent / suivant / plein ecran
+        self.fullscreen_viewer = FullScreenViewer()
+        self.viewport_btns = QWidget(self.preview_viewport)
+        btns_layout = QHBoxLayout(self.viewport_btns)
+        btns_layout.setContentsMargins(0, 0, 0, 0)
+        btns_layout.setSpacing(4)
+        overlay_style = (
+            "QPushButton { background-color: rgba(255, 255, 255, 25);"
+            " border: 1px solid rgba(255, 255, 255, 60); color: #FFFFFF;"
+            " border-radius: 8px; padding: 2px 8px; min-width: 0; }")
+        self.nav_prev_btn = ShineButton("◀")
+        self.nav_prev_btn.setToolTip("Photo précédente")
+        self.nav_prev_btn.setStyleSheet(overlay_style)
+        self.nav_prev_btn.setCursor(Qt.PointingHandCursor)
+        self.nav_prev_btn.clicked.connect(lambda: self.navigate_preview(-1))
+        btns_layout.addWidget(self.nav_prev_btn)
+        self.nav_next_btn = ShineButton("▶")
+        self.nav_next_btn.setToolTip("Photo suivante")
+        self.nav_next_btn.setStyleSheet(overlay_style)
+        self.nav_next_btn.setCursor(Qt.PointingHandCursor)
+        self.nav_next_btn.clicked.connect(lambda: self.navigate_preview(1))
+        btns_layout.addWidget(self.nav_next_btn)
+        self.fullscreen_btn = ShineButton("⛶")
+        self.fullscreen_btn.setToolTip("Plein écran")
+        self.fullscreen_btn.setStyleSheet(overlay_style)
+        self.fullscreen_btn.setCursor(Qt.PointingHandCursor)
+        self.fullscreen_btn.clicked.connect(self.toggle_fullscreen_preview)
+        btns_layout.addWidget(self.fullscreen_btn)
+        self.viewport_btns.adjustSize()
+        self.viewport_btns.hide()
+        self.preview_viewport.installEventFilter(self)
+        self.preview_viewport.view.viewport().installEventFilter(self)
+        # Supprimer les tags : actif quand l'image a le focus (ne vole pas la touche Suppr)
+        del_sc = QShortcut(QKeySequence(Qt.Key_Delete), self.preview_viewport)
+        del_sc.setContext(Qt.WidgetWithChildrenShortcut)
+        del_sc.activated.connect(self.remove_current_tags)
+
+        # Docks : panneaux ancrables, flottants, redimensionnables et regroupables
+        self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowTabbedDocks
+                            | QMainWindow.AllowNestedDocks)
+        self.setCorner(Qt.BottomLeftCorner, Qt.LeftDockWidgetArea)
+        self.setCorner(Qt.BottomRightCorner, Qt.RightDockWidgetArea)
+        dock_features = (QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable
+                         | QDockWidget.DockWidgetFloatable)
+
+        # --- Dock gauche : zone de depot ---
+        drop_panel = QWidget()
+        drop_layout = QVBoxLayout(drop_panel)
+        drop_layout.setContentsMargins(6, 6, 6, 6)
+        drop_layout.setSpacing(8)
 
         self.drop_list = DropZone()
         self.drop_list.setViewMode(QListWidget.IconMode)
@@ -768,7 +1005,7 @@ class PhotoSorterApp(QMainWindow):
         self.drop_list.files_dropped.connect(self.on_files_dropped)
         drop_layout.addWidget(self.drop_list)
 
-        self.drop_hint = QLabel("Glissez vos photos ou dossiers ici\n(tout est copi\u00e9 dans le dossier \u00e0 trier)")
+        self.drop_hint = QLabel("Glissez vos photos ou dossiers ici\n(tout est copié dans le dossier à trier)")
         self.drop_hint.setAlignment(Qt.AlignCenter)
         self.drop_hint.setStyleSheet("color: #aaaaaa; border: none;")
         drop_layout.addWidget(self.drop_hint)
@@ -779,10 +1016,10 @@ class PhotoSorterApp(QMainWindow):
 
         # Selection manuelle en plus du glisser-deposer
         select_row = QHBoxLayout()
-        self.select_files_btn = ShineButton("\ud83d\uddc2 Fichiers...")
+        self.select_files_btn = ShineButton("🗂 Fichiers...")
         self.select_files_btn.clicked.connect(self.select_files_dialog)
         select_row.addWidget(self.select_files_btn)
-        self.select_folder_btn = ShineButton("\ud83d\udcc1 Dossier...")
+        self.select_folder_btn = ShineButton("📁 Dossier...")
         self.select_folder_btn.clicked.connect(self.select_folder_dialog)
         select_row.addWidget(self.select_folder_btn)
         select_row.addStretch(1)
@@ -792,26 +1029,30 @@ class PhotoSorterApp(QMainWindow):
         actions_row = QHBoxLayout()
         watch_box = QGroupBox("Surveillance (expert)")
         watch_layout = QHBoxLayout(watch_box)
-        self.check_watch = QCheckBox("D\u00e9marrer la surveillance")
+        self.check_watch = QCheckBox("Démarrer la surveillance")
         self.check_watch.stateChanged.connect(self.toggle_watchdog)
         watch_layout.addWidget(self.check_watch)
         actions_row.addWidget(watch_box)
         actions_row.addStretch()
-        self.sort_btn = ShineButton("\ud83d\udcc1 Trier maintenant")
+        self.sort_btn = ShineButton("📁 Trier maintenant")
         self.sort_btn.clicked.connect(self.trier_dossier_maintenant)
         actions_row.addWidget(self.sort_btn)
         drop_layout.addLayout(actions_row)
 
-        # Accepter le depot sur toute la zone gauche (cadre, titre et libelle compris)
-        self.drop_group = drop_group
-        drop_group.setAcceptDrops(True)
-        drop_group.installEventFilter(self)
+        self.drop_dock = QDockWidget("Zone de dépôt", self)
+        self.drop_dock.setWidget(drop_panel)
+        self.drop_dock.setFeatures(dock_features)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.drop_dock)
+        # Depot accepte sur toute la zone du panneau (cadre et libelles compris)
+        self.drop_group = drop_panel
+        drop_panel.setAcceptDrops(True)
+        drop_panel.installEventFilter(self)
 
-        self.bottom_splitter.addWidget(drop_group)
-
-        # --- Dossiers de tri (categories) ---
-        categories_group = QGroupBox("Dossiers de tri")
-        categories_layout = QVBoxLayout(categories_group)
+        # --- Dock droite : dossiers de tri + tags ---
+        categories_panel = QWidget()
+        categories_layout = QVBoxLayout(categories_panel)
+        categories_layout.setContentsMargins(6, 6, 6, 6)
+        categories_layout.setSpacing(8)
 
         self.categories_list = QListWidget()
         self.categories_list.setViewMode(QListWidget.IconMode)
@@ -830,7 +1071,7 @@ class PhotoSorterApp(QMainWindow):
         self.categories_list.itemClicked.connect(self.on_category_item_clicked)
         categories_layout.addWidget(self.categories_list)
 
-        self.folder_back_btn = ShineButton("\u2b05 Dossiers")
+        self.folder_back_btn = ShineButton("⬅ Dossiers")
         self.folder_back_btn.setVisible(False)
         self.folder_back_btn.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self.folder_back_btn.clicked.connect(self.show_folders_view)
@@ -838,20 +1079,20 @@ class PhotoSorterApp(QMainWindow):
 
         self.category_buttons_frame = QFrame()
         buttons_layout = QHBoxLayout(self.category_buttons_frame)
-        add_category_btn = ShineButton("\u2795 Ajouter")
+        add_category_btn = ShineButton("➕ Ajouter")
         add_category_btn.clicked.connect(self.add_category)
         buttons_layout.addWidget(add_category_btn)
-        edit_category_btn = ShineButton("\u270f Modifier")
+        edit_category_btn = ShineButton("✏ Modifier")
         edit_category_btn.clicked.connect(self.edit_category)
         buttons_layout.addWidget(edit_category_btn)
-        delete_category_btn = ShineButton("\u274c Supprimer")
+        delete_category_btn = ShineButton("❌ Supprimer")
         delete_category_btn.clicked.connect(self.delete_category)
         buttons_layout.addWidget(delete_category_btn)
         categories_layout.addWidget(self.category_buttons_frame)
 
         actions_frame = QFrame()
         actions_layout = QHBoxLayout(actions_frame)
-        save_btn = ShineButton("\ud83d\udcbe Enregistrer")
+        save_btn = ShineButton("💾 Enregistrer")
         save_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         save_btn.clicked.connect(self.save_settings)
         actions_layout.addWidget(save_btn)
@@ -861,69 +1102,131 @@ class PhotoSorterApp(QMainWindow):
         self.settings_status.setStyleSheet("color: #107C10; border: none;")
         categories_layout.addWidget(self.settings_status)
 
-        self.bottom_splitter.addWidget(categories_group)
-        self.tri_splitter.addWidget(self.bottom_splitter)
+        # ========== Gestion des tags (integree au panneau) ==========
+        self.current_tags_label = QLabel("Tags actuels : Aucun")
+        self.current_tags_label.setStyleSheet("font-weight: bold; color: #FFFFFF; border: none;")
+        categories_layout.addWidget(self.current_tags_label)
 
-        # ========== PREVISUALISATION : viewport unique ==========
-        preview_group = QGroupBox("Pr\u00e9visualisation")
-        preview_layout = QVBoxLayout(preview_group)
+        tag_add_row = QHBoxLayout()
+        self.new_tag_input = QLineEdit()
+        self.new_tag_input.setPlaceholderText("Ex: cheval, paysage...")
+        # Autocompletion a partir des tags existants
+        self.tag_completer_model = QStringListModel()
+        self.tag_completer = QCompleter(self.tag_completer_model, self.new_tag_input)
+        self.tag_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        try:
+            self.tag_completer.setFilterMode(Qt.MatchContains)
+        except AttributeError:
+            pass
+        self.new_tag_input.setCompleter(self.tag_completer)
+        tag_add_row.addWidget(self.new_tag_input, 1)
+        self.add_tag_btn = ShineButton("➕")
+        self.add_tag_btn.setToolTip("Ajouter le tag à l'image affichée")
+        self.add_tag_btn.clicked.connect(self.add_tag_to_image)
+        tag_add_row.addWidget(self.add_tag_btn)
+        categories_layout.addLayout(tag_add_row)
 
-        self.preview_viewport = ImageViewport()
-        self.preview_viewport.setMinimumHeight(280)
-        preview_layout.addWidget(self.preview_viewport, 1)
+        self.tags_list_widget = QListWidget()
+        self.tags_list_widget.setMaximumHeight(110)
+        self.tags_list_widget.itemClicked.connect(self.on_tag_selected)
+        self.tags_list_widget.setStyleSheet("""
+            QListWidget { background-color: #1E1E1E; border: 1px solid #333333; border-radius: 8px; color: #FFFFFF; }
+            QListWidget::item { padding: 6px; border-radius: 6px; margin: 1px; }
+            QListWidget::item:hover { background-color: rgba(255, 255, 255, 30); }
+            QListWidget::item:selected { background-color: #0078D4; }
+        """)
+        categories_layout.addWidget(self.tags_list_widget)
 
-        # Bouton plein ecran superpose en bas a droite de l'image
-        self.fullscreen_viewer = FullScreenViewer()
-        self.fullscreen_btn = ShineButton("\u26f6 Plein \u00e9cran")
-        self.fullscreen_btn.setParent(self.preview_viewport)
-        self.fullscreen_btn.setStyleSheet(
-            "QPushButton { background-color: rgba(255, 255, 255, 25);"
-            " border: 1px solid rgba(255, 255, 255, 60); color: #FFFFFF;"
-            " border-radius: 8px; padding: 6px 12px; min-width: 100px; }")
-        self.fullscreen_btn.setCursor(Qt.PointingHandCursor)
-        self.fullscreen_btn.clicked.connect(self.toggle_fullscreen_preview)
-        self.preview_viewport.installEventFilter(self)
-        self.fullscreen_btn.show()
-        self.tri_splitter.insertWidget(0, preview_group)
-        self.tri_splitter.setStretchFactor(0, 2)
-        self.tri_splitter.setStretchFactor(1, 1)
-        self.tri_splitter.setSizes([700, 350])
-        self.bottom_splitter.setStretchFactor(0, 3)
-        self.bottom_splitter.setStretchFactor(1, 2)
-        main_layout.addWidget(self.tri_splitter, 1)
+        self.categories_dock = QDockWidget("Dossiers de tri", self)
+        self.categories_dock.setWidget(categories_panel)
+        self.categories_dock.setFeatures(dock_features)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.categories_dock)
 
-        # ========== PROGRESSION DU TRI + JOURNAL (masque) ==========
-        progress_row = QHBoxLayout()
-        self.sort_progress = ShineProgressBar()
-        self.sort_progress.setTextVisible(False)
-        self.sort_progress.setVisible(False)
-        progress_row.addWidget(self.sort_progress, 1)
-        self.sort_status_label = QLabel("Pr\u00eat.")
-        progress_row.addWidget(self.sort_status_label)
-        self.cancel_sort_btn = ShineButton("Annuler")
-        self.cancel_sort_btn.setVisible(False)
-        self.cancel_sort_btn.clicked.connect(self.cancel_sort)
-        progress_row.addWidget(self.cancel_sort_btn)
-        self.log_toggle_btn = ShineButton("Journal")
-        self.log_toggle_btn.setCheckable(True)
-        self.log_toggle_btn.toggled.connect(self.toggle_journal)
-        progress_row.addWidget(self.log_toggle_btn)
-        self.debug_dump_btn = ShineButton("Debug")
-        self.debug_dump_btn.setToolTip("Enregistre un dump de l'interface (debug_ui/)")
-        self.debug_dump_btn.clicked.connect(self.dump_ui_state)
-        progress_row.addWidget(self.debug_dump_btn)
-        main_layout.addLayout(progress_row)
-
-        # Journal masque par defaut, accessible via le bouton
-        self.log_group = QGroupBox("Journal")
-        log_layout = QVBoxLayout(self.log_group)
+        # --- Dock bas : journal ---
+        journal_panel = QWidget()
+        journal_layout = QVBoxLayout(journal_panel)
+        journal_layout.setContentsMargins(6, 6, 6, 6)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(150)
-        log_layout.addWidget(self.log_text)
-        self.log_group.setVisible(False)
-        main_layout.addWidget(self.log_group)
+        journal_layout.addWidget(self.log_text)
+        self.journal_dock = QDockWidget("Journal", self)
+        self.journal_dock.setWidget(journal_panel)
+        self.journal_dock.setFeatures(dock_features)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.journal_dock)
+        self.journal_dock.hide()
+        self.journal_dock.visibilityChanged.connect(self.log_toggle_btn.setChecked)
 
+        # --- Menus (ruban) avec raccourcis clavier ---
+        menubar = self.menuBar()
+
+        file_menu = menubar.addMenu("Fichier")
+        act = file_menu.addAction("Ouvrir fichier...")
+        act.setShortcut("Ctrl+O")
+        act.triggered.connect(self.select_files_dialog)
+        act = file_menu.addAction("Ouvrir dossier...")
+        act.setShortcut("Ctrl+Shift+O")
+        act.triggered.connect(self.select_folder_dialog)
+        file_menu.addSeparator()
+        act = file_menu.addAction("Nouveau tag")
+        act.setShortcut("Ctrl+N")
+        act.triggered.connect(self.focus_new_tag_input)
+        act = file_menu.addAction("Supprimer les tags de l'image")
+        act.triggered.connect(self.remove_current_tags)
+        file_menu.addSeparator()
+        act = file_menu.addAction("Enregistrer")
+        act.setShortcut("Ctrl+S")
+        act.triggered.connect(self.save_settings)
+        act = file_menu.addAction("Enregistrer la disposition")
+        act.setShortcut("Ctrl+Shift+S")
+        act.triggered.connect(self.save_window_state)
+        file_menu.addSeparator()
+        act = file_menu.addAction("Fermer")
+        act.setShortcut("Ctrl+Q")
+        act.triggered.connect(self.close)
+
+        edit_menu = menubar.addMenu("Edition")
+        act = edit_menu.addAction("Annuler (tri en cours)")
+        act.setShortcut("Ctrl+Z")
+        act.triggered.connect(self.edit_undo)
+        act = edit_menu.addAction("Refaire (relancer le tri)")
+        act.setShortcut("Ctrl+Y")
+        act.triggered.connect(self.edit_redo)
+        edit_menu.addSeparator()
+        act = edit_menu.addAction("Copier le chemin de l'image")
+        act.setShortcut("Ctrl+C")
+        act.triggered.connect(self.edit_copy)
+        act = edit_menu.addAction("Coller des fichiers")
+        act.setShortcut("Ctrl+V")
+        act.triggered.connect(self.edit_paste)
+        edit_menu.addSeparator()
+        act = edit_menu.addAction("Supprimer l'image affichée...")
+        act.setShortcut("Ctrl+Del")
+        act.triggered.connect(self.delete_current_image)
+
+        tools_menu = menubar.addMenu("Outils")
+        act = tools_menu.addAction("Trier maintenant")
+        act.triggered.connect(self.trier_dossier_maintenant)
+        tools_menu.addSeparator()
+        act = tools_menu.addAction("Zoom +")
+        act.setShortcut("Ctrl++")
+        act.triggered.connect(lambda: self.preview_viewport.zoom_in())
+        act = tools_menu.addAction("Zoom -")
+        act.setShortcut("Ctrl+-")
+        act.triggered.connect(lambda: self.preview_viewport.zoom_out())
+        act = tools_menu.addAction("Plein écran")
+        act.setShortcut("Ctrl+F")
+        act.triggered.connect(self.toggle_fullscreen_preview)
+
+        view_menu = menubar.addMenu("Affichage")
+        act = view_menu.addAction("Disposition classique")
+        act.triggered.connect(self.reset_layout)
+        view_menu.addSeparator()
+        view_menu.addAction(self.drop_dock.toggleViewAction())
+        view_menu.addAction(self.categories_dock.toggleViewAction())
+        view_menu.addAction(self.journal_dock.toggleViewAction())
+
+        # --- Disposition sauvegardee + remplissage initial ---
+        self.restore_window_state()
         self.refresh_drop_zone()
         self.refresh_categories_list()
 
@@ -1014,12 +1317,44 @@ class PhotoSorterApp(QMainWindow):
         if not viewport or not viewport.pixmap_item:
             self.log_message("Aucune photo a afficher en plein ecran")
             return
-        self.fullscreen_viewer.show_pixmap(viewport.pixmap_item.pixmap())
+        origin = QRect(viewport.mapToGlobal(QPoint(0, 0)), viewport.size())
+        self.fullscreen_viewer.show_pixmap(viewport.pixmap_item.pixmap(), origin)
+
+    def _position_fullscreen_btn(self):
+        """Place les boutons (nav + plein ecran) en bas a droite de la photo affichee."""
+        viewport = getattr(self, 'preview_viewport', None)
+        bar = getattr(self, 'viewport_btns', None)
+        if not viewport or not bar:
+            return
+        if not viewport.pixmap_item:
+            bar.hide()
+            return
+        bar.show()
+        rect = viewport.view.mapFromScene(viewport.pixmap_item.boundingRect()).boundingRect()
+        x = rect.right() - bar.width() - 12
+        y = rect.bottom() - bar.height() - 12
+        x = max(0, min(x, viewport.width() - bar.width()))
+        y = max(0, min(y, viewport.height() - bar.height()))
+        bar.move(int(x), int(y))
 
     def preview_from_drop(self, item):
         path = item.data(Qt.UserRole)
         if path:
+            paths = [self.drop_list.item(i).data(Qt.UserRole)
+                     for i in range(self.drop_list.count())]
+            self._nav_files = [p for p in paths if p]
             self.show_in_preview(path)
+
+    def navigate_preview(self, direction):
+        """Affiche la photo precedente/suivante de la liste courante."""
+        files = getattr(self, '_nav_files', [])
+        if not files:
+            self.log_message("Aucune navigation disponible")
+            return
+        index = getattr(self, '_nav_index', 0)
+        new_index = (index + direction) % len(files)
+        self._nav_index = new_index
+        self.show_in_preview(files[new_index])
 
     def show_in_preview(self, path):
         """Affiche une image en grand dans le viewport de previsualisation."""
@@ -1027,101 +1362,127 @@ class PhotoSorterApp(QMainWindow):
         if pixmap is not None and not pixmap.isNull():
             self.preview_viewport.set_pixmap(pixmap)
             self.current_image_path = str(path)
+            nav = getattr(self, '_nav_files', [])
+            if str(path) in nav:
+                self._nav_index = nav.index(str(path))
             self.sort_status_label.setText(os.path.basename(str(path)))
+            if getattr(self, 'current_tags_label', None):
+                tags = self.tag_manager.get_tags(path)
+                self.current_tags_label.setText(f"Tags actuels : {', '.join(tags) if tags else 'Aucun'}")
         else:
             self.log_message(f"Impossible d'afficher : {path}")
 
     def toggle_journal(self, visible):
-        self.log_group.setVisible(visible)
+        self.journal_dock.setVisible(visible)
 
-    def setup_tags_tab(self):
-        self.tags_tab = QWidget()
-        self.tabs.addTab(self.tags_tab, "\ud83c\udff7\ufe0f Gestion des Tags")
-        layout = QVBoxLayout(self.tags_tab)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(20)
+    def focus_new_tag_input(self):
+        """Place le curseur dans le champ de tag (Ctrl+N)."""
+        self.new_tag_input.setFocus()
 
-        # Recherche par dossier
-        folder_search_group = QGroupBox("Rechercher dans un dossier")
-        folder_search_layout = QHBoxLayout()
-        self.folder_path_input = QLineEdit()
-        self.folder_path_input.setPlaceholderText("Dossier \u00e0 scanner...")
-        folder_search_layout.addWidget(self.folder_path_input)
-        browse_folder_btn = ShineButton("\ud83d\udcc1 Parcourir dossier")
-        browse_folder_btn.clicked.connect(self.browse_folder_for_tags)
-        folder_search_layout.addWidget(browse_folder_btn)
-        folder_search_group.setLayout(folder_search_layout)
-        layout.addWidget(folder_search_group)
+    def remove_current_tags(self):
+        """Supprime tous les tags de l'image affichee (Suppr apres clic sur l'image)."""
+        image_path = getattr(self, 'current_image_path', None)
+        if not image_path or not os.path.exists(image_path):
+            self.log_message("Aucune image affichée")
+            return
+        tags = self.tag_manager.get_tags(image_path)
+        if not tags:
+            self.log_message("Cette image n'a pas de tag")
+            return
+        for tag in tags:
+            self.tag_manager.remove_tag(image_path, tag)
+        self.log_message(f"Tags supprimés pour {os.path.basename(image_path)}")
+        self.load_image_tags(image_path)
+        self.refresh_tags_list()
 
-        # Champ masqué pour la compatibilité
-        self.entry_image_path = QLineEdit()
-        self.entry_image_path.setVisible(False)
+    def edit_undo(self):
+        """Ctrl+Z : annule le tri en cours (ou la saisie dans un champ texte)."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit)):
+            focus.undo()
+            return
+        self.cancel_sort()
 
-        # ========== ZONE CENTRALE : Panneau miniatures + Liste tags ==========
-        content_layout = QHBoxLayout()
+    def edit_redo(self):
+        """Ctrl+Y : relance le tri (ou refait la saisie dans un champ texte)."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit)):
+            focus.redo()
+            return
+        self.trier_dossier_maintenant()
 
-        # --- Panneau droit : Miniatures ---
-        thumb_group = QGroupBox("Miniatures")
-        thumb_layout = QVBoxLayout(thumb_group)
-        self.search_results = QListWidget()
-        self.search_results.setViewMode(QListWidget.IconMode)
-        self.search_results.setIconSize(QSize(120, 120))
-        self.search_results.setResizeMode(QListWidget.Adjust)
-        self.search_results.setMovement(QListWidget.Static)
-        self.search_results.setWrapping(False)
-        self.search_results.setFlow(QListWidget.TopToBottom)
-        self.search_results.setUniformItemSizes(True)
-        self.search_results.setSpacing(4)
-        self.search_results.setFixedWidth(170)
-        self.search_results.setStyleSheet("""
-            QListWidget { background-color: #1E1E1E; border: 1px solid #333333; border-radius: 8px; }
-            QListWidget::item { border-radius: 8px; padding: 4px; margin: 2px; }
-            QListWidget::item:hover { background-color: rgba(255, 255, 255, 30); }
-            QListWidget::item:selected { background-color: #0078D4; }
-        """)
-        self.search_results.itemClicked.connect(self.load_image_from_results)
-        thumb_layout.addWidget(self.search_results)
-        thumb_group.setFixedWidth(180)
-        content_layout.addWidget(thumb_group)
+    def edit_copy(self):
+        """Ctrl+C : copie le chemin de l'image affichee (ou la selection d'un champ)."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit)):
+            focus.copy()
+            return
+        if self.current_image_path:
+            QApplication.clipboard().setText(self.current_image_path)
+            self.log_message(f"Chemin copié : {self.current_image_path}")
 
-        # --- Panneau far right : Liste des tags ---
-        tags_list_group = QGroupBox("Tags")
-        tags_list_layout = QVBoxLayout(tags_list_group)
-        self.tags_list_widget = QListWidget()
-        self.tags_list_widget.setFixedWidth(150)
-        self.tags_list_widget.setStyleSheet("""
-            QListWidget { background-color: #1E1E1E; border: 1px solid #333333; border-radius: 8px; color: #FFFFFF; }
-            QListWidget::item { padding: 8px; border-radius: 6px; margin: 2px; }
-            QListWidget::item:hover { background-color: rgba(255, 255, 255, 30); }
-            QListWidget::item:selected { background-color: #0078D4; }
-        """)
-        self.tags_list_widget.itemClicked.connect(self.on_tag_selected)
-        tags_list_layout.addWidget(self.tags_list_widget)
-        tags_list_group.setFixedWidth(160)
-        content_layout.addWidget(tags_list_group)
+    def edit_paste(self):
+        """Ctrl+V : importe dans a_trier les fichiers dont le chemin est en presse-papiers."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit)):
+            focus.paste()
+            return
+        text = QApplication.clipboard().text()
+        paths = [line.strip().strip('"') for line in text.splitlines() if line.strip()]
+        paths = [p for p in paths if os.path.exists(p)]
+        if paths:
+            self.on_files_dropped(paths)
+        else:
+            self.log_message("Aucun chemin de fichier valide dans le presse-papiers")
 
-        layout.addLayout(content_layout)
+    def delete_current_image(self):
+        """Supprime du disque l'image affichee, apres confirmation."""
+        image_path = getattr(self, 'current_image_path', None)
+        if not image_path or not os.path.exists(image_path):
+            self.log_message("Aucune image affichée")
+            return
+        confirm = QMessageBox.question(
+            self, "Confirmer la suppression",
+            f"Supprimer définitivement ce fichier ?\n{image_path}",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        for tag in self.tag_manager.get_tags(image_path):
+            self.tag_manager.remove_tag(image_path, tag)
+        try:
+            os.remove(image_path)
+            self.log_message(f"Supprimé : {image_path}")
+        except Exception as e:
+            self.log_message(f"Impossible de supprimer : {e}")
+            return
+        nav = getattr(self, '_nav_files', [])
+        if image_path in nav:
+            idx = nav.index(image_path)
+            nav.pop(idx)
+            self._nav_index = min(idx, len(nav) - 1) if nav else 0
+            if nav:
+                self.show_in_preview(nav[self._nav_index])
+            else:
+                self.preview_viewport.clear_view()
+        else:
+            self.preview_viewport.clear_view()
+        self.refresh_drop_zone()
+        self.refresh_categories_list()
+        self.refresh_tags_list()
 
-        # Tags actuels
-        self.current_tags_label = QLabel("Tags actuels : Aucun")
-        self.current_tags_label.setStyleSheet("font-weight: bold; color: #ffffff;")
-        layout.addWidget(self.current_tags_label)
+    def reset_layout(self):
+        """Repositionne les panneaux dans la disposition par defaut."""
+        for dock, area in ((self.drop_dock, Qt.LeftDockWidgetArea),
+                           (self.categories_dock, Qt.RightDockWidgetArea),
+                           (self.journal_dock, Qt.BottomDockWidgetArea)):
+            self.addDockWidget(area, dock)
+            dock.setFloating(False)
+            dock.show()
+        self.journal_dock.hide()
+        self.log_message("Disposition des panneaux réinitialisée")
 
-        # Ajouter un tag
-        tag_group = QGroupBox("Ajouter un tag a cette image")
-        tag_layout = QHBoxLayout()
-        self.new_tag_input = QLineEdit()
-        self.new_tag_input.setPlaceholderText("Ex: cheval, paysage...")
-        tag_layout.addWidget(self.new_tag_input)
-        add_tag_btn = ShineButton("\u2795 Ajouter le tag")
-        add_tag_btn.clicked.connect(self.add_tag_to_image)
-        tag_layout.addWidget(add_tag_btn)
-        tag_group.setLayout(tag_layout)
-        layout.addWidget(tag_group)
 
-        # Champ cache pour compatibilite (tag_search n'est plus dans l'UI mais reference dans scan_folder)
-        self.tag_search = QLineEdit()
-        self.tag_search.setVisible(False)
     def refresh_categories_list(self):
         """Rafraichit les dossiers de tri : icone de dossier + titre + nombre de photos."""
         self.current_category = None
@@ -1161,6 +1522,8 @@ class PhotoSorterApp(QMainWindow):
         self.categories_list.clear()
         folder = Path(self.config.DOSSIER_TRIES) / category
         files = self._image_files_in(folder) if folder.exists() else []
+        self._nav_files = [str(p) for p in files]
+        self._nav_index = 0
         for p in files:
             entry = QListWidgetItem()
             thumb = self.create_thumbnail(str(p), 80)
@@ -1347,15 +1710,6 @@ class PhotoSorterApp(QMainWindow):
             )
 
     # ====================== NAVIGATION ======================
-    def browse_folder_for_tags(self):
-        """Parcourir un dossier pour chercher des images taguées"""
-        folder = QFileDialog.getExistingDirectory(
-            self, "Sélectionner un dossier à scanner", str(self.config.DOSSIER_TRIES)
-        )
-        if folder:
-            self.folder_path_input.setText(folder)
-            self.scan_folder_for_tags(folder)
-
     def create_thumbnail(self, image_path, size=120):
         """Cree une miniature QPixmap a partir d'un chemin d'image.
         Utilise PIL pour generer un JPEG en memoire -> loadFromData force une copie complete.
@@ -1390,65 +1744,19 @@ class PhotoSorterApp(QMainWindow):
             logging.debug(f"Erreur miniature {image_path}: {e}")
             return None
 
-    def scan_folder_for_tags(self, folder):
-        """Scanne un dossier et affiche les miniatures des images"""
-        self.search_results.clear()
-        all_images = []
-
-        try:
-            for root, _, files in os.walk(folder):
-                for file in files:
-                    filepath = Path(root) / file
-                    if filepath.suffix.lower() in (self.config.IMAGE_EXTENSIONS | self.config.RAW_EXTENSIONS):
-                        all_images.append(str(filepath))
-
-            if not all_images:
-                self.log_message("\u274c Aucune image trouvée dans ce dossier.")
-                return
-
-            # Filtrer par tag si un tag est saisi
-            tag = self.tag_search.text().strip()
-            if tag:
-                results = []
-                for img_path in all_images:
-                    img_tags = self.tag_manager.get_tags(img_path)
-                    if tag.lower() in [t.lower() for t in img_tags]:
-                        results.append(img_path)
-                all_images = results
-
-            for img_path in all_images:
-                thumbnail = self.create_thumbnail(img_path)
-                if thumbnail is not None:
-                    item = QListWidgetItem()
-                    item.setIcon(QIcon(thumbnail))
-                    item.setData(Qt.UserRole, img_path)
-                    tags = self.tag_manager.get_tags(img_path)
-                    tag_str = f" [{', '.join(tags)}]" if tags else ""
-                    item.setToolTip(f"{os.path.basename(img_path)}{tag_str}")
-                    self.search_results.addItem(item)
-
-            self.log_message(f"\u2705 {self.search_results.count()} image(s) affichée(s).")
-        except Exception as e:
-            self.log_message(f"\u274c Erreur lors du scan du dossier: {e}")
-
     def add_tag_to_image(self):
-        """Ajoute un tag a l'image actuellement selectionnee dans les resultats"""
-        selected_items = self.search_results.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, "Erreur", "Aucune image selectionnee dans les resultats !")
+        """Ajoute un tag a l'image actuellement affichee en previsualisation."""
+        image_path = getattr(self, 'current_image_path', None)
+        if not image_path or not os.path.exists(image_path):
+            QMessageBox.warning(self, "Erreur", "Aucune image affichée en prévisualisation !")
             return
-
-        item = selected_items[0]
-        image_path = item.data(Qt.UserRole)
-
         new_tag = self.new_tag_input.text().strip()
         if not new_tag:
             QMessageBox.warning(self, "Erreur", "Veuillez saisir un tag !")
             return
-
         self.tag_manager.add_tag(image_path, new_tag)
         self.new_tag_input.clear()
-        self.log_message(f"\u2705 Tag '{new_tag}' ajoute a {os.path.basename(image_path)}")
+        self.log_message(f"✅ Tag '{new_tag}' ajouté à {os.path.basename(image_path)}")
         self.load_image_tags(image_path)
         self.refresh_tags_list()
 
@@ -1456,6 +1764,8 @@ class PhotoSorterApp(QMainWindow):
         """Rafraichit la liste des tags avec le nombre d'images par tag"""
         self.tags_list_widget.clear()
         all_tags = self.tag_manager.get_all_tags()
+        if getattr(self, 'tag_completer_model', None) is not None:
+            self.tag_completer_model.setStringList(all_tags)
         for tag in all_tags:
             count = len([p for p in self.tag_manager.get_images_by_tag(tag) if os.path.exists(p)])
             item = QListWidgetItem(f"{tag} ({count})")
@@ -1470,31 +1780,35 @@ class PhotoSorterApp(QMainWindow):
         self.display_images_by_tag(tag)
 
     def display_images_by_tag(self, tag):
-        """Affiche les miniatures des images pour un tag donne"""
+        """Affiche les miniatures des images d'un tag dans le panneau dossiers."""
         all_results = self.tag_manager.get_images_by_tag(tag)
-        self.search_results.clear()
         if not all_results:
-            self.log_message(f"Aucune image trouvee pour le tag '{tag}'.")
+            self.log_message(f"Aucune image trouvée pour le tag '{tag}'.")
             return
-
+        self.current_category = f"__tag__{tag}"
+        self.folder_back_btn.setVisible(True)
+        self.category_buttons_frame.setVisible(False)
+        self.categories_list.clear()
+        self._nav_files = []
+        self._nav_index = 0
         found_count = 0
         missing_count = 0
         for img_path in all_results:
             if not os.path.exists(img_path):
                 missing_count += 1
                 continue
-            item = QListWidgetItem()
-            thumbnail = self.create_thumbnail(img_path)
+            entry = QListWidgetItem()
+            thumbnail = self.create_thumbnail(img_path, 80)
             if thumbnail is not None:
-                item.setIcon(QIcon(thumbnail))
+                entry.setIcon(QIcon(thumbnail))
             found_count += 1
-            item.setData(Qt.UserRole, img_path)
+            self._nav_files.append(img_path)
+            entry.setData(Qt.UserRole, img_path)
             tags = self.tag_manager.get_tags(img_path)
             tag_str = f" [{', '.join(tags)}]" if tags else ""
-            item.setToolTip(f"{os.path.basename(img_path)}{tag_str}")
-            self.search_results.addItem(item)
-
-        msg = f"\u2705 {found_count} image(s) pour le tag '{tag}'."
+            entry.setToolTip(f"{os.path.basename(img_path)}{tag_str}")
+            self.categories_list.addItem(entry)
+        msg = f"✅ {found_count} image(s) pour le tag '{tag}'."
         if missing_count > 0:
             msg += f" ({missing_count} fichier(s) manquant(s))"
         self.log_message(msg)
@@ -1722,23 +2036,6 @@ class PhotoSorterApp(QMainWindow):
         self.refresh_drop_zone()
         self.refresh_categories_list()
 
-    def search_by_tag(self):
-        """Recherche des images par tag (utilise par scan_folder, delegue vers display_images_by_tag)"""
-        tag = self.tag_search.text().strip()
-        if tag:
-            self.display_images_by_tag(tag)
-
-    def load_image_from_results(self, item):
-        """Affiche une image des resultats dans le viewport unique (onglet Tri)."""
-        image_path = item.data(Qt.UserRole)
-        if image_path:
-            self.tabs.setCurrentWidget(self.tri_tab)
-            self.show_in_preview(image_path)
-            self.load_image_tags(image_path)
-
-
-
-
     def eventFilter(self, obj, event):
         """Filtre les événements : dépôt glisser-déposer sur la zone de dépôt."""
         # Depot sur toute la zone de dépôt (cadre compris)
@@ -1753,11 +2050,13 @@ class PhotoSorterApp(QMainWindow):
                     self.on_files_dropped(paths)
                 event.acceptProposedAction()
                 return True
-        # Bouton plein ecran : suivre le coin bas-droit du viewport
-        if obj == getattr(self, 'preview_viewport', None) and event.type() == QEvent.Resize:
-            btn = getattr(self, 'fullscreen_btn', None)
-            if btn is not None:
-                btn.move(obj.width() - btn.width() - 12, obj.height() - btn.height() - 12)
+        # Bouton plein ecran : suivre le coin bas-droit de la photo affichee
+        viewport = getattr(self, 'preview_viewport', None)
+        if viewport is not None:
+            if obj == viewport and event.type() == QEvent.Resize:
+                self._position_fullscreen_btn()
+            elif obj == viewport.view.viewport() and event.type() == QEvent.Paint:
+                self._position_fullscreen_btn()
         return super().eventFilter(obj, event)
 
     # ====================== DUMP UI (DEBUG) ======================
